@@ -293,9 +293,8 @@ before setting up the service. `--robot.id=so101_follower` names that
 calibration; it is not the USB device ID. Also record the full serial path
 you used for the configuration below.
 
-Use LeRobot's interactive calibration guide if your installed release has
-different CLI flags. The follower service runs with `HF_HOME=/var/lib/cf-robot`
-and uses `connect(calibrate=False)`; it must not attempt interactive
+The follower service runs with `HF_HOME=/var/lib/cf-robot` and uses
+`connect(calibrate=False)`; it must not attempt interactive
 calibration at boot or when a client connects. The camera is configured by
 device path and does not need a LeRobot arm-calibration ID. Perform this
 one-time terminal calibration over SSH on a headless Pi; it is not part of
@@ -309,8 +308,22 @@ normal startup.
    ls -l /dev/v4l/by-id/
    ```
 
-   Record the full `/dev/v4l/by-id/...` path for the camera video device.
-   This is separate from the follower's `/dev/serial/by-id/...` path.
+   One USB camera may appear twice, with names ending in `-video-index0`
+   and `-video-index1`. These are two interfaces of the same camera, not
+   two cameras. Usually `-video-index0` is the image capture interface,
+   while `-video-index1` is a secondary/metadata interface. Start with
+   the full `-video-index0` path for `CAMERA_DEVICE`, rather than
+   `/dev/video0`, whose number may change. For example, for a Sonix
+   USB2.0 CAM1:
+
+   ```text
+   CAMERA_DEVICE=/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0
+   ```
+
+   Use the name reported on your Pi. If capture fails, verify which
+   interface supports video capture rather than blindly switching to
+   `-video-index1`. The camera path is separate from the follower's
+   `/dev/serial/by-id/...` path.
 
 2. **Generate an origin key on the Pi.** Run `openssl rand -hex 32`.
    Keep the output private; you will need the same key on the laptop.
