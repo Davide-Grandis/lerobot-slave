@@ -1,0 +1,19 @@
+README.md
+  s_93e8a4658813d1::t_6551273b239e39 20,133-134,161-164,220-222,230,240-285,371-374
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ba8d9b43271e64cfca9db1381dde6b01da7fa623",
+  "prompts": {},
+  "sessions": {
+    "s_93e8a4658813d1": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "troubled-jackfruit",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
