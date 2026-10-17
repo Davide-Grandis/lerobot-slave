@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Field Console — SO-ARM101</title>
+  <style>
+    :root {
+      --paper: #eee9db;
+      --ink: #202a29;
+      --muted: #66716b;
+      --line: #b8beb0;
+      --signal: #d65e36;
+      --lime: #d1dc74;
+      --panel: #f9f6ed;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Avenir Next", "Gill Sans", sans-serif;
+      background: radial-gradient(circle at 90% 0%, #faf4df 0, transparent 40%),
+                  repeating-linear-gradient(0deg, transparent 0 39px, #d8dbcd55 40px),
+                  var(--paper);
+      min-height: 100vh;
+    }
+    .shell { max-width: 1240px; margin: auto; padding: 28px clamp(20px, 4vw, 56px) 56px; }
+    header, .eyebrow, .meta, .panel-head, .actions, footer {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    }
+    header { border-bottom: 2px solid var(--ink); padding-bottom: 18px; }
+    .mark { display: flex; align-items: center; gap: 12px; font-weight: 800; letter-spacing: .08em; }
+    .mark-icon { width: 32px; height: 32px; border: 3px solid var(--ink); border-radius: 50%; position: relative; }
+    .mark-icon:after { content: ""; position: absolute; width: 15px; height: 3px; background: var(--ink); top: 12px; left: 22px; transform: rotate(-35deg); }
+    .mono { font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+    .meta { color: var(--muted); }
+    .eyebrow { margin-top: 48px; color: var(--signal); font-weight: 800; }
+    h1 { font: 500 clamp(58px, 9vw, 120px)/.9 Georgia, serif; letter-spacing: -.075em; margin: 18px 0 24px; }
+    .intro { max-width: 630px; color: #48534d; font-size: 18px; line-height: 1.5; margin: 0 0 44px; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(295px, .75fr); gap: 18px; }
+    .panel { background: var(--panel); border: 1px solid var(--ink); box-shadow: 6px 6px 0 #202a291a; }
+    .panel-head { padding: 14px 18px; border-bottom: 1px solid var(--line); font-weight: 800; }
+    .live { display: flex; align-items: center; gap: 9px; color: var(--muted); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--signal); }
+    .live.connected .dot { background: #5e875a; box-shadow: 0 0 0 4px #5e875a22; }
+    .feed { aspect-ratio: 4 / 3; background: #222e2b; position: relative; overflow: hidden; }
+    .feed:after { content: ""; position: absolute; inset: 16px; border: 1px solid #ffffff40; pointer-events: none; }
+    .feed img { width: 100%; height: 100%; object-fit: contain; display: none; }
+    .feed img.visible { display: block; }
+    .feed-message { position: absolute; inset: 0; display: grid; place-items: center; color: #dae2cf; text-align: center; padding: 32px; }
+    .feed-message.hidden { display: none; }
+    .corner { position: absolute; top: 28px; left: 30px; color: white; z-index: 1; }
+    .caption { padding: 14px 18px; border-top: 1px solid var(--line); color: var(--muted); }
+    .controls { padding: 24px; display: flex; flex-direction: column; }
+    .label { color: var(--muted); }
+    .status { font: 500 42px/1.1 Georgia, serif; margin: 14px 0 12px; text-transform: capitalize; }
+    .state-text { color: var(--muted); line-height: 1.5; min-height: 72px; margin: 0; }
+    .rule { border-top: 1px solid var(--line); margin: 20px 0; }
+    .detail { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid #d8dccc; }
+    .detail span:last-child { font-weight: 700; }
+    .actions { margin-top: auto; padding-top: 30px; }
+    button { border: 1px solid var(--ink); color: var(--ink); background: var(--lime); font: 800 13px "Avenir Next", sans-serif; letter-spacing: .08em; text-transform: uppercase; padding: 16px 18px; cursor: pointer; flex: 1; }
+    button:hover:not(:disabled) { filter: brightness(.93); transform: translateY(-2px); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.stop { background: transparent; }
+    .warning { margin-top: 18px; border-left: 3px solid var(--signal); padding-left: 12px; color: #704331; line-height: 1.45; font-size: 13px; }
+    footer { margin-top: 42px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); }
+    header, .eyebrow, h1, .grid { animation: rise .55s both; }
+    .eyebrow { animation-delay: .08s; }
+    h1 { animation-delay: .16s; }
+    .grid { animation-delay: .25s; }
+    @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+    @media (prefers-reduced-motion: reduce) {
+      header, .eyebrow, h1, .grid { animation: none; }
+      button:hover:not(:disabled) { transform: none; }
+    }
+    @media (max-width: 800px) {
+      .grid { grid-template-columns: 1fr; }
+      .eyebrow { margin-top: 36px; }
+      .controls { min-height: 370px; }
+      .meta .desktop { display: none; }
+      h1 { font-size: clamp(58px, 14vw, 94px); }
+      footer { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="mark"><span class="mark-icon" aria-hidden="true"></span><span>FIELD CONSOLE</span></div>
+      <div class="meta mono"><span class="desktop">SO-ARM101 / REMOTE TELEOP</span><span>LOCAL OPERATOR</span></div>
+    </header>
+    <div class="eyebrow mono"><span>01 / LIVE CONTROL</span><span>LEADER → FOLLOWER</span></div>
+    <h1>Distance,<br>in motion.</h1>
+    <p class="intro">Your leader arm stays here. The follower and its camera stay on the other end of the connection. Align both arms before starting.</p>
+    <main class="grid">
+      <section class="panel" aria-label="Follower camera">
+        <div class="panel-head"><span>Follower camera</span><span class="live mono" id="camera-state"><span class="dot"></span><span>Connecting</span></span></div>
+        <div class="feed">
+          <span class="corner mono">CAM / 01</span>
+          <img id="frame" alt="Live video from the follower arm camera">
+          <div class="feed-message mono" id="feed-message">Waiting for camera stream…</div>
+        </div>
+        <div class="caption mono">Live JPEG feed · video availability does not arm the robot</div>
+      </section>
+      <section class="panel controls" aria-label="Teleoperation controls">
+        <span class="label mono">Control session / 01</span>
+        <div class="status" id="status" role="status" aria-live="polite">Idle</div>
+        <p class="state-text" id="status-detail">Connect the local leader arm, check the camera view, then start when the arms are aligned.</p>
+        <div class="rule"></div>
+        <div class="detail"><span class="mono">Leader</span><span>USB · local</span></div>
+        <div class="detail"><span class="mono">Follower</span><span>Cloudflare Tunnel</span></div>
+        <div class="detail"><span class="mono">Video</span><span>Remote camera</span></div>
+        <div class="actions"><button id="start">Start control</button><button class="stop" id="stop" disabled>Stop</button></div>
+        <div class="warning">Network control is not an emergency stop. Keep a physical stop and a clear workspace within reach of the follower.</div>
+      </section>
+    </main>
+    <footer class="mono"><span>SO-ARM101 / OPERATOR STATION</span><span>One operator at a time · control stops on connection loss</span></footer>
+  </div>
+  <script>
+    const statusEl = document.getElementById("status");
+    const detailEl = document.getElementById("status-detail");
+    const startButton = document.getElementById("start");
+    const stopButton = document.getElementById("stop");
+    const frame = document.getElementById("frame");
+    const feedMessage = document.getElementById("feed-message");
+    const cameraState = document.getElementById("camera-state");
+    let frameUrl;
+
+    async function refresh() {
+      try {
+        const response = await fetch("/api/status", { cache: "no-store" });
+        const data = await response.json();
+        statusEl.textContent = data.state;
+        detailEl.textContent = data.error || (data.running
+          ? "Control is active. Moving the leader arm commands the remote follower."
+          : "Align the arms before starting. The follower is not receiving motion commands.");
+        startButton.disabled = data.running;
+        stopButton.disabled = !data.running;
+      } catch {
+        statusEl.textContent = "Offline";
+        detailEl.textContent = "The local operator service is unavailable.";
+        startButton.disabled = true;
+        stopButton.disabled = true;
+      }
+    }
+    async function command(action) {
+      try {
+        const response = await fetch("/api/" + action, { method: "POST" });
+        if (!response.ok) throw new Error((await response.json()).detail);
+        await refresh();
+      } catch (error) {
+        detailEl.textContent = error.message;
+      }
+    }
+    startButton.addEventListener("click", () => command("start"));
+    stopButton.addEventListener("click", () => command("stop"));
+    function video() {
+      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+      const socket = new WebSocket(scheme + "//" + location.host + "/ws/video");
+      socket.binaryType = "blob";
+      socket.onmessage = (event) => {
+        if (!(event.data instanceof Blob)) return;
+        const nextUrl = URL.createObjectURL(event.data);
+        if (frameUrl) URL.revokeObjectURL(frameUrl);
+        frameUrl = nextUrl;
+        frame.src = nextUrl;
+        frame.classList.add("visible");
+        feedMessage.classList.add("hidden");
+        cameraState.classList.add("connected");
+        cameraState.lastElementChild.textContent = "Live";
+      };
+      socket.onclose = () => {
+        cameraState.classList.remove("connected");
+        cameraState.lastElementChild.textContent = "Reconnecting";
+        feedMessage.textContent = "Camera unavailable · retrying";
+        feedMessage.classList.remove("hidden");
+        frame.classList.remove("visible");
+        setTimeout(video, 3000);
+      };
+    }
+    refresh();
+    setInterval(refresh, 1000);
+    setInterval(() => fetch("/api/heartbeat", { method: "POST" }).catch(() => {}), 1000);
+    video();
+  </script>
+</body>
+</html>

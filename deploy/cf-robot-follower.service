@@ -1,0 +1,24 @@
+[Unit]
+Description=SO-ARM101 follower origin for Cloudflare Tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=robot
+Group=robot
+SupplementaryGroups=dialout video
+Environment=HF_HOME=/var/lib/cf-robot
+EnvironmentFile=/etc/cf-robot/follower.env
+WorkingDirectory=/opt/cf-robot
+ExecStart=/opt/cf-robot/venv/bin/cf-robot-follower --port ${FOLLOWER_PORT} --arm-id ${FOLLOWER_ID} --camera ${CAMERA_DEVICE}
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/cf-robot
+
+[Install]
+WantedBy=multi-user.target
