@@ -19,7 +19,7 @@ Source repository: [Davide-Grandis/lerobot-slave](https://github.com/Davide-Gran
 | Laptop | SO-ARM101 leader attached by USB; Python supported by the selected LeRobot release; serial-device access; network access to the public FQDN. |
 | Raspberry Pi | Headless Debian (no monitor or desktop required) on a Pi capable of running the selected LeRobot dependencies; SO-ARM101 follower and UVC-compatible camera attached by USB; serial and video-device access; `systemd`. |
 | Both hosts | This package, compatible LeRobot/Feetech dependencies, separately calibrated arms, and synchronized clocks (NTP). Use the same tested LeRobot release on both hosts. |
-| Cloudflare | Davides Lab account, an active zone/FQDN, a named Tunnel with a `cloudflared` connector on the Pi, an Access self-hosted application, and an Access service token. |
+| Cloudflare | An account with an active zone/FQDN, a named Tunnel with a `cloudflared` connector on the Pi, an Access self-hosted application, and an Access service token. |
 | Safety | A clear workspace, a physical emergency stop, and an operator able to observe the follower. Do not use internet teleoperation for safety-critical motion. |
 
 The package declares Python `>=3.10,<3.14`; a particular LeRobot release
