@@ -161,12 +161,9 @@ LeRobot for this local user; do not copy the leader calibration to the Pi.
 
 ### Raspberry Pi (Debian)
 
-For a **fresh installation**, first push this project's files to the GitHub
-repository, then clone it to the path used by the included service unit.
+For a **fresh installation**, clone it to the path used by the included service unit.
 Do not run `git clone` over an existing `/opt/cf-robot`; use the upgrade
-procedure below instead. Ensure Git and
-Debian's Python virtual-environment support (`python3-venv` for the chosen
-interpreter) are installed. Run the commands below **on the Pi**; use its
+procedure below instead. Ensure Git and Debian's Python virtual-environment support (`python3-venv` for the chosen interpreter) are installed. Run the commands below **on the Pi**; use its
 compatible Python interpreter in place of `python3` if needed. Create the
 service user before calibration:
 
@@ -296,10 +293,7 @@ instead of discarding local changes.
 
 ## Cloudflare dashboard setup
 
-Use the **Davides Lab** account (`e0c71a962ea703eee7f1a42d5f9b3290`).
-The hostname below is an example; substitute a real FQDN in that account.
-You perform these steps manually; never paste a tunnel token or service-token
-secret into this repository:
+Perform the following steps in the Cloudflare account:
 
 1. In Zero Trust, create a named Cloudflare Tunnel and install its
    `cloudflared` connector **as a service on the Pi** using the dashboard's
