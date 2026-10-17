@@ -277,10 +277,21 @@ sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache
    fi
    ```
 
-`--robot.type` selects LeRobot's SO-101 follower driver; `--robot.id` is the
-calibration-file ID, not a USB identifier. Later, set `FOLLOWER_PORT` in
-`/etc/cf-robot/follower.env` to this **same serial path** and `FOLLOWER_ID`
-to `so101_follower`, so the service uses the calibration you just created.
+When calibration finishes, LeRobot saves it automatically under
+`/var/lib/cf-robot/lerobot/calibration/robots/so_follower/so101_follower.json`.
+There is no separate save command. Record that file path in your setup
+notes if you need it for a backup; do not move the file. Verify that it
+exists on the Pi:
+
+```sh
+sudo -u robot test -s /var/lib/cf-robot/lerobot/calibration/robots/so_follower/so101_follower.json \
+  && echo 'Follower calibration found'
+```
+
+If the message does not appear, stop and resolve the missing calibration
+before setting up the service. `--robot.id=so101_follower` names that
+calibration; it is not the USB device ID. Also record the full serial path
+you used for the configuration below.
 
 Use LeRobot's interactive calibration guide if your installed release has
 different CLI flags. The follower service runs with `HF_HOME=/var/lib/cf-robot`
@@ -290,25 +301,57 @@ device path and does not need a LeRobot arm-calibration ID. Perform this
 one-time terminal calibration over SSH on a headless Pi; it is not part of
 normal startup.
 
-Create the local configuration, then install and enable the service:
+#### Configure and start the follower service
 
-```sh
-sudo install -d -m 0750 /etc/cf-robot
-sudo cp /opt/cf-robot/deploy/follower.env.example /etc/cf-robot/follower.env
-sudoedit /etc/cf-robot/follower.env
-sudo chmod 0640 /etc/cf-robot/follower.env
-sudo cp /opt/cf-robot/deploy/cf-robot-follower.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now cf-robot-follower
-sudo systemctl status cf-robot-follower
-curl http://127.0.0.1:8765/health
-```
+1. **Find the camera path on the Pi.** With the camera connected, run:
 
-Set `FOLLOWER_PORT`, `FOLLOWER_ID`, and `CAMERA_DEVICE` to the Pi's real
-devices/ID. Generate an origin key with `openssl rand -hex 32` and put the
-result in `CF_ROBOT_ORIGIN_KEY` in this file **and** the laptop's secret
-manager. `CHANGE_ME` is too short and intentionally prevents startup. Keep
-the file readable only by administrators; do not commit it. The included
+   ```sh
+   ls -l /dev/v4l/by-id/
+   ```
+
+   Record the full `/dev/v4l/by-id/...` path for the camera video device.
+   This is separate from the follower's `/dev/serial/by-id/...` path.
+
+2. **Generate an origin key on the Pi.** Run `openssl rand -hex 32`.
+   Keep the output private; you will need the same key on the laptop.
+
+3. **Create and edit the Pi configuration.** The copy command will not
+   overwrite an existing `/etc/cf-robot/follower.env`:
+
+   ```sh
+   sudo install -d -m 0750 /etc/cf-robot
+   sudo cp -n /opt/cf-robot/deploy/follower.env.example /etc/cf-robot/follower.env
+   sudoedit /etc/cf-robot/follower.env
+   ```
+
+   Set all four lines in the editor, then **save and exit**:
+
+   ```text
+   FOLLOWER_PORT=/dev/serial/by-id/YOUR_FOLLOWER_DEVICE
+   FOLLOWER_ID=so101_follower
+   CAMERA_DEVICE=/dev/v4l/by-id/YOUR_CAMERA_DEVICE
+   CF_ROBOT_ORIGIN_KEY=YOUR_GENERATED_KEY
+   ```
+
+   Replace `YOUR_FOLLOWER_DEVICE` with the actual device ID used for
+   calibration, `YOUR_CAMERA_DEVICE` with the camera device ID from step 1,
+   and `YOUR_GENERATED_KEY` with the output from step 2. Do not leave
+   `CHANGE_ME` or any `YOUR_...` placeholders in the file. Put the same
+   origin key in the laptop's secret manager; never commit or share it.
+
+4. **Protect the file and start the service.** Only do this after saving
+   the real paths and key:
+
+   ```sh
+   sudo chmod 0640 /etc/cf-robot/follower.env
+   sudo cp /opt/cf-robot/deploy/cf-robot-follower.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now cf-robot-follower
+   sudo systemctl status cf-robot-follower
+   curl http://127.0.0.1:8765/health
+   ```
+
+Keep the file readable only by administrators; do not commit it. The included
 unit expects `/opt/cf-robot/venv`, runs as `robot`, binds
 `127.0.0.1:8765`, starts on reboot, and restarts on process failure. It
 does not connect to or move the arm until a control session is opened.
