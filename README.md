@@ -207,8 +207,9 @@ sudo apt update
 sudo apt install python3 python3-venv
 ```
 
-Confirm that `python3 --version` meets the Python requirement stated above,
-then create the service user and venv **on the Pi**:
+Confirm that `python3 --version` reports Python 3.13 for these Pi
+installation commands (the project supports Python `>=3.12,<3.14`).
+Then create the service user and venv **on the Pi**:
 
 ```sh
 sudo useradd --system --user-group --create-home --home-dir /var/lib/cf-robot \
@@ -246,19 +247,16 @@ sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache
    ```
 
    An entry may look like
-   `usb-FTDI_FT232R_USB_UART_A1B2-if00-port0 -> ../../ttyUSB0` (example
-   only). The part **before `->`** is the device ID; the exact name on
-   your Pi will differ. If the directory is missing or empty, check
+   `usb-FTDI_FT232R_USB_UART_A1B2-if00-port0 -> ../../ttyUSB0`.
+   The part **before `->`** is the device ID.
+   If the directory is missing or empty, check
    `ls -l /dev/ttyUSB* /dev/ttyACM*` and resolve the missing device
    before calibrating.
 
 2. **Choose the follower's full port path.** Prefix its device ID with
    `/dev/serial/by-id/`. For the example above the path would be
-   `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A1B2-if00-port0`; do
-   **not** copy this example as your actual port. A camera device under
-   `/dev/v4l/by-id/` is not the arm's serial port. If multiple serial
-   entries appear and you cannot identify the follower, do not guess;
-   identify its adapter before continuing.
+   `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A1B2-if00-port0`.
+   A camera device under `/dev/v4l/by-id/` is not the arm's serial port.
 
 3. **Calibrate using that path.** Paste the full path at the prompt.
    The command verifies that it is a character device and that the
