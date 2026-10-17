@@ -17,7 +17,7 @@ Source repository: [Davide-Grandis/lerobot-slave](https://github.com/Davide-Gran
 | Area | Requirement |
 | --- | --- |
 | Laptop | SO-ARM101 leader attached by USB; Python supported by the selected LeRobot release; serial-device access; network access to the public FQDN. |
-| Raspberry Pi | Headless Debian (no monitor or desktop required) on a Pi capable of running the selected LeRobot dependencies; SO-ARM101 follower and UVC-compatible camera attached by USB; serial and video-device access; `systemd`. |
+| Raspberry Pi | Headless 64-bit Debian (AArch64); SO-ARM101 follower and UVC-compatible camera attached by USB; serial and video-device access; `systemd`. See the Pi hardware assumptions below. |
 | Both hosts | This package, compatible LeRobot/Feetech dependencies, separately calibrated arms, and synchronized clocks (NTP). Use the same tested LeRobot release on both hosts. |
 | Cloudflare | An account with an active zone/FQDN, a named Tunnel with a `cloudflared` connector on the Pi, an Access self-hosted application, and an Access service token. |
 | Safety | A clear workspace, a physical emergency stop, and an operator able to observe the follower. Do not use internet teleoperation for safety-critical motion. |
@@ -130,10 +130,8 @@ a reverse proxy.
 Use a `python3` version compatible with both `pyproject.toml` and your chosen
 LeRobot release. This project pins **LeRobot 0.6.1** on both hosts; its
 hardware APIs have been checked against that release, but the complete
-system still needs a physical-arm test. It also depends on
-`websockets`, FastAPI, Uvicorn, and headless OpenCV. Published CPU wheels
-for Python 3.13/AArch64 have been identified, but Pi hardware operation
-is not yet verified.
+system still needs a physical-arm test. Pi hardware operation is not yet
+verified.
 
 Find stable Pi devices with `ls -l /dev/serial/by-id/ /dev/v4l/by-id/`. The
 leader on macOS usually appears as `/dev/tty.usbmodem...`. Check permissions
@@ -159,6 +157,10 @@ must match the ID used later with `--arm-id`. Calibration is stored by
 LeRobot for this local user; do not copy the leader calibration to the Pi.
 
 ### Raspberry Pi (Debian)
+
+These instructions assume a Raspberry Pi 4 with 4 GB RAM and 64-bit
+Debian (AArch64). The dependency commands below use Python 3.13; check
+that it is available on your Pi before continuing.
 
 #### Step 1: Configure the Cloudflare Tunnel
 
@@ -215,16 +217,9 @@ sudo chown -R robot:robot /var/lib/cf-robot
 sudo python3 -m venv /opt/cf-robot/venv
 ```
 
-**CPU-only Pi installation:** LeRobot requires PyTorch, but the default
-Linux/AArch64 build can pull NVIDIA CUDA packages that this follower
-does not need. Install the CPU wheels first. On the Pi, `/tmp` may be a
-small RAM filesystem, so use disk-backed `/var/tmp` for pip.
-LeRobot also requires torchvision; use its CPU wheel, but do not install
-training, dataset, visualization, or audio extras on the follower Pi.
-
-Install the published Python 3.13/AArch64 CPU-only PyTorch pair from
-PyTorch's CPU index. `TMPDIR=/var/tmp` places pip's temporary files on
-the Pi's disk, and `--no-cache-dir` avoids filling the pip cache:
+Install the project's pinned PyTorch and torchvision packages first.
+Use `/var/tmp` for pip's temporary files because `/tmp` may be small
+on the Pi:
 
 ```sh
 sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache-dir \
@@ -232,32 +227,62 @@ sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache
   'torch==2.7.1+cpu' 'torchvision==0.22.1'
 ```
 
-Then install this project and the pinned LeRobot release with Feetech
-support. The CPU wheels already installed satisfy LeRobot's PyTorch
-requirements, so pip should **not** download CUDA packages:
+Then install this project and LeRobot's Feetech support:
 
 ```sh
 sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache-dir \
   -e /opt/cf-robot 'lerobot[feetech]==0.6.1'
 /opt/cf-robot/venv/bin/python -m pip check
-/opt/cf-robot/venv/bin/python -c 'import torch, torchvision; print(torch.__version__, torchvision.__version__)'
 ```
-
-Check that the reported torch version ends in `+cpu`. Do not proceed
-to calibration if pip again starts downloading `nvidia-*`, `cuda-*`, or
-`triton` wheels.
 
 #### Calibrate the follower arm
 
-After installing the dependencies, run LeRobot's one-time interactive
-calibration **on the Pi as the `robot` service user**:
+1. **Retrieve the USB serial device ID.** Connect the follower arm's USB
+   adapter to the Pi. With no control session running, list the stable
+   serial-device names:
 
-```sh
-sudo -u robot env HF_HOME=/var/lib/cf-robot /opt/cf-robot/venv/bin/lerobot-calibrate \
-  --robot.type=so101_follower \
-  --robot.port=/dev/serial/by-id/YOUR_FOLLOWER_DEVICE \
-  --robot.id=so101_follower
-```
+   ```sh
+   ls -l /dev/serial/by-id/
+   ```
+
+   An entry may look like
+   `usb-FTDI_FT232R_USB_UART_A1B2-if00-port0 -> ../../ttyUSB0` (example
+   only). The part **before `->`** is the device ID; the exact name on
+   your Pi will differ. If the directory is missing or empty, check
+   `ls -l /dev/ttyUSB* /dev/ttyACM*` and resolve the missing device
+   before calibrating.
+
+2. **Choose the follower's full port path.** Prefix its device ID with
+   `/dev/serial/by-id/`. For the example above the path would be
+   `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A1B2-if00-port0`; do
+   **not** copy this example as your actual port. A camera device under
+   `/dev/v4l/by-id/` is not the arm's serial port. If multiple serial
+   entries appear and you cannot identify the follower, do not guess;
+   identify its adapter before continuing.
+
+3. **Calibrate using that path.** Paste the full path at the prompt.
+   The command verifies that it is a character device and that the
+   `robot` service user can access it before starting LeRobot's
+   interactive calibration:
+
+   ```sh
+   read -r -p 'Follower serial path (/dev/serial/by-id/...): ' FOLLOWER_PORT
+   if [ -c "$FOLLOWER_PORT" ] &&
+      sudo -u robot test -r "$FOLLOWER_PORT" &&
+      sudo -u robot test -w "$FOLLOWER_PORT"; then
+     sudo -u robot env HF_HOME=/var/lib/cf-robot /opt/cf-robot/venv/bin/lerobot-calibrate \
+       --robot.type=so101_follower \
+       --robot.port="$FOLLOWER_PORT" \
+       --robot.id=so101_follower
+   else
+     echo "Wrong serial path or robot user lacks device access: $FOLLOWER_PORT" >&2
+   fi
+   ```
+
+`--robot.type` selects LeRobot's SO-101 follower driver; `--robot.id` is the
+calibration-file ID, not a USB identifier. Later, set `FOLLOWER_PORT` in
+`/etc/cf-robot/follower.env` to this **same serial path** and `FOLLOWER_ID`
+to `so101_follower`, so the service uses the calibration you just created.
 
 Use LeRobot's interactive calibration guide if your installed release has
 different CLI flags. The follower service runs with `HF_HOME=/var/lib/cf-robot`
@@ -343,11 +368,10 @@ sudo systemctl stop cf-robot-follower &&
 sudo git -C /opt/cf-robot pull --ff-only
 ```
 
-If dependencies or package entry points change, first ensure the CPU
-PyTorch pair above is installed in this venv, then run
-`sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache-dir -e /opt/cf-robot 'lerobot[feetech]==0.6.1'`
-**before starting** the service. Only if the service unit changes,
-run `sudo cp /opt/cf-robot/deploy/cf-robot-follower.service /etc/systemd/system/`
+If dependencies or package entry points change, repeat the Pi dependency
+installation commands above **before starting** the service. Only if the
+service unit changes, run
+`sudo cp /opt/cf-robot/deploy/cf-robot-follower.service /etc/systemd/system/`
 and `sudo systemctl daemon-reload` before starting. Do not repeat those
 steps for an ordinary code-only update. If any update step fails, leave
 the service stopped until it is resolved.
