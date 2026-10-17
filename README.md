@@ -22,11 +22,10 @@ Source repository: [Davide-Grandis/lerobot-slave](https://github.com/Davide-Gran
 | Cloudflare | An account with an active zone/FQDN, a named Tunnel with a `cloudflared` connector on the Pi, an Access self-hosted application, and an Access service token. |
 | Safety | A clear workspace, a physical emergency stop, and an operator able to observe the follower. Do not use internet teleoperation for safety-critical motion. |
 
-The package declares Python `>=3.10,<3.14`; a particular LeRobot release
-may support fewer versions. Use an explicitly compatible interpreter rather
-than the machine's default if necessary. Network latency, USB permissions,
-camera availability, and ARM-compatible dependencies must be verified on
-the actual Pi before operation.
+The package and pinned LeRobot release require Python `>=3.12,<3.14`.
+Check `python3 --version` before installing. Network latency, USB
+permissions, camera availability, and ARM-compatible dependencies must
+be verified on the actual Pi before operation.
 
 ## Architecture
 
@@ -128,13 +127,13 @@ a reverse proxy.
 
 ## Install and calibrate
 
-Use an interpreter compatible with both `pyproject.toml` and your chosen
-LeRobot release. For example, use `python3.12` instead of `python3` if the
-latter is 3.14. Install the **same tested LeRobot release** on both hosts and
-pin it in your deployment environment; the package currently declares
-`lerobot>=0.4,<1` rather than an exact release. It also depends on
-`websockets`, FastAPI, Uvicorn, and headless OpenCV. LeRobot hardware APIs and
-ARM package availability have not been validated against every version.
+Use a `python3` version compatible with both `pyproject.toml` and your chosen
+LeRobot release. This project pins **LeRobot 0.6.1** on both hosts; its
+hardware APIs have been checked against that release, but the complete
+system still needs a physical-arm test. It also depends on
+`websockets`, FastAPI, Uvicorn, and headless OpenCV. Published CPU wheels
+for Python 3.13/AArch64 have been identified, but Pi hardware operation
+is not yet verified.
 
 Find stable Pi devices with `ls -l /dev/serial/by-id/ /dev/v4l/by-id/`. The
 leader on macOS usually appears as `/dev/tty.usbmodem...`. Check permissions
@@ -148,7 +147,7 @@ CLI/web console:
 
 ```sh
 python3 -m venv .venv
-.venv/bin/python -m pip install -e . 'lerobot[feetech]'
+.venv/bin/python -m pip install -e . 'lerobot[feetech]==0.6.1'
 .venv/bin/lerobot-calibrate \
   --teleop.type=so101_leader \
   --teleop.port=/dev/tty.usbmodemYOUR_LEADER_DEVICE \
@@ -189,19 +188,71 @@ below instead. Keep the paths separate:
 
 
 
-#### Install dependencies and calibrate
+#### Install dependencies
 
-Ensure Git and Debian's Python virtual-environment support (`python3-venv`
-for the chosen interpreter) are installed. Run the commands below **on
-the Pi**; use its compatible Python interpreter in place of `python3`
-if needed. Create the service user before calibration:
+On the Pi, check the installed Python version and venv package:
+
+```sh
+python3 --version
+dpkg -s python3-venv
+```
+
+If `python3` is missing or `dpkg` reports that `python3-venv` is not
+installed, install both Debian packages:
+
+```sh
+sudo apt update
+sudo apt install python3 python3-venv
+```
+
+Confirm that `python3 --version` meets the Python requirement stated above,
+then create the service user and venv **on the Pi**:
 
 ```sh
 sudo useradd --system --user-group --create-home --home-dir /var/lib/cf-robot \
   --groups dialout,video robot
 sudo chown -R robot:robot /var/lib/cf-robot
 sudo python3 -m venv /opt/cf-robot/venv
-sudo /opt/cf-robot/venv/bin/python -m pip install -e /opt/cf-robot 'lerobot[feetech]'
+```
+
+**CPU-only Pi installation:** LeRobot requires PyTorch, but the default
+Linux/AArch64 build can pull NVIDIA CUDA packages that this follower
+does not need. Install the CPU wheels first. On the Pi, `/tmp` may be a
+small RAM filesystem, so use disk-backed `/var/tmp` for pip.
+LeRobot also requires torchvision; use its CPU wheel, but do not install
+training, dataset, visualization, or audio extras on the follower Pi.
+
+Install the published Python 3.13/AArch64 CPU-only PyTorch pair from
+PyTorch's CPU index. `TMPDIR=/var/tmp` places pip's temporary files on
+the Pi's disk, and `--no-cache-dir` avoids filling the pip cache:
+
+```sh
+sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache-dir \
+  --index-url https://download.pytorch.org/whl/cpu \
+  'torch==2.7.1+cpu' 'torchvision==0.22.1'
+```
+
+Then install this project and the pinned LeRobot release with Feetech
+support. The CPU wheels already installed satisfy LeRobot's PyTorch
+requirements, so pip should **not** download CUDA packages:
+
+```sh
+sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache-dir \
+  -e /opt/cf-robot 'lerobot[feetech]==0.6.1'
+/opt/cf-robot/venv/bin/python -m pip check
+/opt/cf-robot/venv/bin/python -c 'import torch, torchvision; print(torch.__version__, torchvision.__version__)'
+```
+
+Check that the reported torch version ends in `+cpu`. Do not proceed
+to calibration if pip again starts downloading `nvidia-*`, `cuda-*`, or
+`triton` wheels.
+
+#### Calibrate the follower arm
+
+After installing the dependencies, run LeRobot's one-time interactive
+calibration **on the Pi as the `robot` service user**:
+
+```sh
 sudo -u robot env HF_HOME=/var/lib/cf-robot /opt/cf-robot/venv/bin/lerobot-calibrate \
   --robot.type=so101_follower \
   --robot.port=/dev/serial/by-id/YOUR_FOLLOWER_DEVICE \
@@ -292,9 +343,10 @@ sudo systemctl stop cf-robot-follower &&
 sudo git -C /opt/cf-robot pull --ff-only
 ```
 
-If dependencies or package entry points change, run
-`sudo /opt/cf-robot/venv/bin/python -m pip install -e /opt/cf-robot 'lerobot[feetech]'`
-**now, before starting** the service. Only if the service unit changes,
+If dependencies or package entry points change, first ensure the CPU
+PyTorch pair above is installed in this venv, then run
+`sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache-dir -e /opt/cf-robot 'lerobot[feetech]==0.6.1'`
+**before starting** the service. Only if the service unit changes,
 run `sudo cp /opt/cf-robot/deploy/cf-robot-follower.service /etc/systemd/system/`
 and `sudo systemctl daemon-reload` before starting. Do not repeat those
 steps for an ordinary code-only update. If any update step fails, leave
@@ -479,7 +531,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 validation, credentials, idle behavior, alignment, hardware failure, and
 watchdog behavior without attached arms. The optional WebSocket/video/UI
 smoke tests in `tests/test_integration.py` require the project dependencies
-and `httpx` (install with `pip install -e '.[test]' 'lerobot[feetech]'`
+and `httpx` (install with `pip install -e '.[test]' 'lerobot[feetech]==0.6.1'`
 in a compatible environment); they are skipped when dependencies are
 missing. They use fake hardware, not a Cloudflare account.
 

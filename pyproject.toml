@@ -6,9 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "cf-robot"
 version = "0.1.0"
 description = "SO-ARM101 teleoperation through Cloudflare Tunnel"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.12,<3.14"
 dependencies = [
-  "lerobot>=0.4,<1",
+  "lerobot==0.6.1",
+  # Raspberry Pi CPU wheels: fail resolution rather than pulling CUDA builds.
+  "torch==2.7.1+cpu; sys_platform == 'linux' and platform_machine == 'aarch64'",
+  "torchvision==0.22.1; sys_platform == 'linux' and platform_machine == 'aarch64'",
   "websockets>=14,<17",
   "fastapi>=0.115,<1",
   "uvicorn>=0.30,<1",
