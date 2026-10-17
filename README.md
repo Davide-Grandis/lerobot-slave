@@ -161,14 +161,42 @@ LeRobot for this local user; do not copy the leader calibration to the Pi.
 
 ### Raspberry Pi (Debian)
 
-For a **fresh installation**, clone it to the path used by the included service unit.
-Do not run `git clone` over an existing `/opt/cf-robot`; use the upgrade
-procedure below instead. Ensure Git and Debian's Python virtual-environment support (`python3-venv` for the chosen interpreter) are installed. Run the commands below **on the Pi**; use its
-compatible Python interpreter in place of `python3` if needed. Create the
-service user before calibration:
+#### Step 1: Configure the Cloudflare Tunnel
+
+In the Cloudflare dashboard, create a named Tunnel for the Pi and follow
+the dashboard-provided **Debian installation instructions** to install
+`cloudflared` as a service on the headless Pi.
+Confirm the connector is connected and the service starts automatically
+after a Pi reboot. 
+
+#### Step 2: Install the code (suggested path)
+
+Use **`/opt/cf-robot`** for the Git checkout. This is the path already
+configured in the `systemd` unit, so no service changes are needed. For a
+fresh installation on the Pi:
 
 ```sh
 sudo git clone https://github.com/Davide-Grandis/lerobot-slave.git /opt/cf-robot
+```
+
+Do not clone over an existing `/opt/cf-robot`; use the upgrade procedure
+below instead. Keep the paths separate:
+
+- `/opt/cf-robot`: application code.
+- `/opt/cf-robot/venv`: Python venv.
+- `/etc/cf-robot/follower.env`: local configuration and origin key.
+- `/var/lib/cf-robot`: service user's persistent calibration data.
+
+
+
+#### Install dependencies and calibrate
+
+Ensure Git and Debian's Python virtual-environment support (`python3-venv`
+for the chosen interpreter) are installed. Run the commands below **on
+the Pi**; use its compatible Python interpreter in place of `python3`
+if needed. Create the service user before calibration:
+
+```sh
 sudo useradd --system --user-group --create-home --home-dir /var/lib/cf-robot \
   --groups dialout,video robot
 sudo chown -R robot:robot /var/lib/cf-robot
@@ -293,26 +321,39 @@ instead of discarding local changes.
 
 ## Cloudflare dashboard setup
 
-Perform the following steps in the Cloudflare account:
 
-1. In Zero Trust, create a named Cloudflare Tunnel and install its
-   `cloudflared` connector **as a service on the Pi** using the dashboard's
-   Debian instructions. Check that `cloudflared` survives a reboot.
-2. Add a public hostname, for example `robot.example.com`, with service type
-   **HTTP** and origin `http://127.0.0.1:8765`. WebSockets use the same
-   hostname; do not expose port 8765 on the Pi's network interface.
-3. Create a Cloudflare Access **self-hosted application** covering the whole
+### Step 3: Map the local app to a public URL (suggested hostname)
+
+In the Cloudflare dashboard, select the Pi's Tunnel and add a public hostname
+(published application route). Choose an available subdomain and a domain in
+your Cloudflare zone, for example `robot.example.com`. Set the service type
+to **HTTP** and its origin URL to **`http://127.0.0.1:8765`**. This address is
+the follower service on the **Pi**, not the laptop. Route the whole hostname
+without restricting it to a path: `/health`, `/control`, and `/video` share
+the same origin. Do not expose port 8765 on the Pi's network interface.
+
+The laptop will use `https://robot.example.com` for health checks or the web
+console and `wss://robot.example.com/control` for CLI control; video uses
+`wss://robot.example.com/video`. Replace the example hostname with your
+chosen FQDN in all commands. A connected Tunnel does not mean the local
+follower service is running; requests can fail until the origin starts.
+
+### Protect the hostname with Access
+
+Configure Access for the entire hostname before operating the arm:
+
+1. Create a Cloudflare Access **self-hosted application** covering the whole
    hostname, not just one path (`/health`, `/control`, and `/video`). Create a
    service token and a **Service Auth** policy allowing only that token. Do not add a
    bypass policy or publish an unprotected alternate hostname. Where the
    Tunnel dashboard offers Access JWT validation at the connector, enable it
    for the application's audience as defense in depth.
-4. Copy the token's client ID and secret to the laptop's environment or a
+2. Copy the token's client ID and secret to the laptop's environment or a
    local secret manager. The secret is shown once; never put it in a URL,
    shell history, browser JavaScript, or the Pi environment file. The
    laptop also needs `CF_ROBOT_ORIGIN_KEY`; do not put any of these values
    in browser JavaScript.
-5. Verify the public hostname rejects a request without Access credentials,
+3. Verify the public hostname rejects a request without Access credentials,
    then verify `https://robot.example.com/health` succeeds when a client
    supplies the two Access headers. A successful health response does not
    verify the WebSocket origin key or USB devices. Do not start control until
