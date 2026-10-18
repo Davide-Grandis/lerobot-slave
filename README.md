@@ -389,11 +389,7 @@ Cloudflare documentation: [Tunnel public hostnames](https://developers.cloudflar
 
 #### Set up and calibrate the leader
 
-Use the same macOS account that will run the CLI or web console. A suggested
-checkout location is `~/Developer/lerobot-slave`; if you already cloned the
-repository elsewhere, use that checkout. Run the commands below from its root:
-
-If you do not have a checkout yet, create one at the suggested path:
+The suggested folder location is `~/Developer/lerobot-slave`. Run the commands below from its root:
 
 ```sh
 mkdir -p "$HOME/Developer"
