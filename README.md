@@ -29,83 +29,7 @@ be verified on the actual Pi before operation.
 
 ## Architecture
 
-```text
-Laptop                                             Cloudflare / Raspberry Pi
-SO-ARM101 leader --USB--> LeRobot SO101Leader
-                             | actions
-                   CLI or local web server
-                             | WSS /control       Access -> Tunnel -> 127.0.0.1:8765
-                             +-------------------------------> Pi follower server
-                                                              | one hardware thread
-                                                              +--> SO101Follower --USB--> arm
-
-Browser <--local /ws/video-- laptop video relay <--WSS /video-- Pi OpenCVCamera
-            127.0.0.1:8080                                    --USB--> follower camera
-```
-
-`cloudflared` routes the **HTTP** public hostname to the Pi's
-`http://127.0.0.1:8765`; the control and video routes upgrade to WebSockets.
-The Pi server never listens on a LAN/public address. The local web server
-listens only on `127.0.0.1:8080`. The browser does not read USB devices,
-contact the Pi directly, or receive Cloudflare credentials. No Workers or
-cloud-hosted UI are involved.
-
-| Component | Responsibility |
-| --- | --- |
-| `src/cf_robot/hardware.py` | Construct LeRobot `SO101Leader`, `SO101Follower`, and `OpenCVCamera`; extract joint observations. |
-| `src/cf_robot/leader.py` | Connect the laptop leader without interactive calibration; send actions at a configured maximum rate (default 30 fps); stop rather than auto-reconnect after failure. |
-| `src/cf_robot/follower.py` | Serve `/health`, `/control`, and `/video`; authenticate WebSocket upgrades; allow one control and one video connection. |
-| `src/cf_robot/control.py` | Own the follower in one thread; retain only the latest target; check alignment, command gap, and joint jumps; disconnect on stop/error. |
-| `src/cf_robot/protocol.py` | Define protocol version 1, joint names, action validation, sequence and timestamp checks. |
-| `src/cf_robot/auth.py` | Validate the remote URL and attach Access and origin-key headers from the laptop environment. |
-| `src/cf_robot/web.py` and `src/cf_robot/index.html` | Serve local controls/status, monitor browser heartbeat, and relay JPEG frames to the browser. |
-| `deploy/` | Example Pi environment file and `systemd` unit. |
-
-### Control and video protocol
-
-- The Pi accepts `/control` only after checking `X-CF-Robot-Key`. It creates
-  one `FollowerSession`, connects the arm with `calibrate=False`, reads its
-  current joint positions, then sends `{"type":"ready","version":1}`.
-- Each subsequent control message is JSON with `version`, `type`, increasing
-  `seq`, Unix-seconds `sent_at`, and exactly six numeric joint positions:
-  `shoulder_pan.pos`, `shoulder_lift.pos`, `elbow_flex.pos`,
-  `wrist_flex.pos`, `wrist_roll.pos`, and `gripper.pos`.
-  For example (illustrative values only; `sent_at` must be current):
-
-  ```json
-  {"version":1,"type":"action","seq":1,"sent_at":1730000000.123,"action":{"shoulder_pan.pos":0,"shoulder_lift.pos":0,"elbow_flex.pos":0,"wrist_flex.pos":0,"wrist_roll.pos":0,"gripper.pos":0}}
-  ```
-
-- The Pi rejects a duplicate/out-of-order sequence, missing/extra joint,
-  non-finite or non-numeric position, position outside +/-360, command older
-  than 500 ms, or timestamp more than 250 ms ahead of its clock. The
-  timestamp is a freshness check, not a clock-synchronization mechanism.
-  A protocol failure ends the session; there is no automatic replay.
-- The follower thread replaces an unprocessed target with the newest one.
-  It checks each accepted target against the initial measured pose or the
-  previously sent target (maximum 5 degrees per joint). It is **not** a
-  real-time servo loop, calibrated joint-limit model, or guaranteed
-  velocity/force limiter. The Pi sends periodic status messages and errors
-  over the control socket.
-- `/video` is a separate WebSocket. The Pi opens the camera on demand and
-  sends binary JPEG frames (default 640x480, 10 fps, JPEG quality 70).
-  The laptop relays them via local `/ws/video`; a video session does not arm
-  the follower. Camera capture, JPEG encoding, and network bandwidth can
-  affect latency; no audio or WebRTC is implemented.
-
-### Trust boundaries
-
-Cloudflare Access should reject unauthenticated requests to **all** Pi
-paths. The laptop supplies `CF-Access-Client-Id` and
-`CF-Access-Client-Secret` on the WebSocket upgrade. Independently, the Pi
-requires a shared `CF_ROBOT_ORIGIN_KEY` (at least 32 characters) as
-`X-CF-Robot-Key` on both WebSocket routes. This limits the damage of an
-accidentally unprotected hostname; it does not replace Access or physical
-safety controls. `/health` is HTTP and has no origin-key check, so protect
-it with the same Access application. The laptop's web server restricts
-hosts to loopback names and requires a matching browser Origin for its
-control POSTs and video WebSocket. Never expose the local web server with
-a reverse proxy.
+See [the architecture, protocol, and trust-boundary notes](docs/architecture.md).
 
 ## Before using hardware
 
@@ -138,24 +62,6 @@ leader on macOS usually appears as `/dev/tty.usbmodem...`. Check permissions
 before starting either program; the Pi service user needs serial (`dialout`)
 and camera (`video`) access.
 
-### Laptop
-
-From this repository's root, under the same account that will run the
-CLI/web console:
-
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -e . 'lerobot[feetech]==0.6.1'
-.venv/bin/lerobot-calibrate \
-  --teleop.type=so101_leader \
-  --teleop.port=/dev/tty.usbmodemYOUR_LEADER_DEVICE \
-  --teleop.id=so101_leader
-```
-
-Replace `python3` with your compatible interpreter as needed. The leader ID
-must match the ID used later with `--arm-id`. Calibration is stored by
-LeRobot for this local user; do not copy the leader calibration to the Pi.
-
 ### Raspberry Pi (Debian)
 
 These instructions assume a Raspberry Pi 4 with 4 GB RAM and 64-bit
@@ -170,18 +76,16 @@ the dashboard-provided **Debian installation instructions** to install
 Confirm the connector is connected and the service starts automatically
 after a Pi reboot. 
 
-#### Step 2: Install the code (suggested path)
+#### Step 2: Install the code
 
-Use **`/opt/cf-robot`** for the Git checkout. This is the path already
-configured in the `systemd` unit, so no service changes are needed. For a
-fresh installation on the Pi:
+The path **`/opt/cf-robot`** matches the `systemd` unit.
+Run: 
 
 ```sh
 sudo git clone https://github.com/Davide-Grandis/lerobot-slave.git /opt/cf-robot
 ```
 
-Do not clone over an existing `/opt/cf-robot`; use the upgrade procedure
-below instead. Keep the paths separate:
+Note: for upgrades see the procedure covered below.
 
 - `/opt/cf-robot`: application code.
 - `/opt/cf-robot/venv`: Python venv.
@@ -189,10 +93,9 @@ below instead. Keep the paths separate:
 - `/var/lib/cf-robot`: service user's persistent calibration data.
 
 
-
 #### Install dependencies
 
-On the Pi, check the installed Python version and venv package:
+Check the installed Python version and venv package:
 
 ```sh
 python3 --version
@@ -239,7 +142,7 @@ sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache
 #### Calibrate the follower arm
 
 1. **Retrieve the USB serial device ID.** Connect the follower arm's USB
-   adapter to the Pi. With no control session running, list the stable
+   cable to the Pi. With no control session running, list the stable
    serial-device names:
 
    ```sh
@@ -279,26 +182,18 @@ sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache
 
 When calibration finishes, LeRobot saves it automatically under
 `/var/lib/cf-robot/lerobot/calibration/robots/so_follower/so101_follower.json`.
-There is no separate save command. Record that file path in your setup
-notes if you need it for a backup; do not move the file. Verify that it
-exists on the Pi:
+Record that file path in your setup notes if you need it for a backup; do not move the file. Verify that it exists on the Pi:
 
 ```sh
 sudo -u robot test -s /var/lib/cf-robot/lerobot/calibration/robots/so_follower/so101_follower.json \
   && echo 'Follower calibration found'
 ```
 
-If the message does not appear, stop and resolve the missing calibration
-before setting up the service. `--robot.id=so101_follower` names that
-calibration; it is not the USB device ID. Also record the full serial path
-you used for the configuration below.
-
-The follower service runs with `HF_HOME=/var/lib/cf-robot` and uses
-`connect(calibrate=False)`; it must not attempt interactive
-calibration at boot or when a client connects. The camera is configured by
-device path and does not need a LeRobot arm-calibration ID. Perform this
-one-time terminal calibration over SSH on a headless Pi; it is not part of
-normal startup.
+LeRobot stores the follower calibration under `/var/lib/cf-robot`; both the
+calibration command and service use this location. Calibration is a one-time
+setup step performed over SSH. The service uses the saved calibration and
+does not prompt for calibration at boot or when a client connects. The camera
+needs its device path in the service configuration, but no arm-calibration ID.
 
 #### Configure and start the follower service
 
@@ -348,9 +243,7 @@ normal startup.
 
    Replace `YOUR_FOLLOWER_DEVICE` with the actual device ID used for
    calibration, `YOUR_CAMERA_DEVICE` with the camera device ID from step 1,
-   and `YOUR_GENERATED_KEY` with the output from step 2. Do not leave
-   `CHANGE_ME` or any `YOUR_...` placeholders in the file. Put the same
-   origin key in the laptop's secret manager; never commit or share it.
+   and `YOUR_GENERATED_KEY` with the output from step 2. 
 
 4. **Protect the file and start the service.** Only do this after saving
    the real paths and key:
@@ -382,7 +275,7 @@ access for the account performing the clone and use its SSH URL instead.
 Never put a personal access token in a clone URL, shell history, or service
 unit.
 
-### Normal startup and restart
+#### Normal startup and restart
 
 After the one-time installation, simply power on the Pi: `systemd` starts
 the follower service and the separately installed `cloudflared` service.
@@ -410,7 +303,7 @@ inside a hardware call; a hardware watchdog would require additional
 implementation and validation. Missing calibration or persistent hardware
 faults also cannot be repaired automatically by restarting.
 
-### Upgrade the Pi from GitHub
+#### Upgrade the Pi from GitHub
 
 Schedule upgrades while the follower is clear and **no control session is
 active**. For a code-only change (no new Python dependencies or changes to
@@ -435,7 +328,7 @@ Only after the update completes successfully, start and verify the service:
 ```sh
 sudo systemctl start cf-robot-follower
 sudo systemctl status cf-robot-follower
-curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:8765/health; echo
 ```
 
 Stop if `git pull` or dependency installation fails; resolve the problem
@@ -452,21 +345,15 @@ instead of discarding local changes.
 ## Cloudflare dashboard setup
 
 
-### Step 3: Map the local app to a public URL (suggested hostname)
+### Step 3: Map the local app to a public URL
 
 In the Cloudflare dashboard, select the Pi's Tunnel and add a public hostname
-(published application route). Choose an available subdomain and a domain in
-your Cloudflare zone, for example `robot.example.com`. Set the service type
-to **HTTP** and its origin URL to **`http://127.0.0.1:8765`**. This address is
-the follower service on the **Pi**, not the laptop. Route the whole hostname
-without restricting it to a path: `/health`, `/control`, and `/video` share
-the same origin. Do not expose port 8765 on the Pi's network interface.
+(published application route).
+Choose an available subdomain and a domain in your Cloudflare zone, for example `robot.example.com`. Set the service type to **HTTP** and its origin URL to **`http://127.0.0.1:8765`**. This address is the follower service on the **Pi**. 
 
-The laptop will use `https://robot.example.com` for health checks or the web
+The controller laptop will use `https://robot.example.com` for health checks or the web
 console and `wss://robot.example.com/control` for CLI control; video uses
-`wss://robot.example.com/video`. Replace the example hostname with your
-chosen FQDN in all commands. A connected Tunnel does not mean the local
-follower service is running; requests can fail until the origin starts.
+`wss://robot.example.com/video`. 
 
 ### Protect the hostname with Access
 
@@ -474,25 +361,168 @@ Configure Access for the entire hostname before operating the arm:
 
 1. Create a Cloudflare Access **self-hosted application** covering the whole
    hostname, not just one path (`/health`, `/control`, and `/video`). Create a
-   service token and a **Service Auth** policy allowing only that token. Do not add a
-   bypass policy or publish an unprotected alternate hostname. Where the
-   Tunnel dashboard offers Access JWT validation at the connector, enable it
-   for the application's audience as defense in depth.
-2. Copy the token's client ID and secret to the laptop's environment or a
-   local secret manager. The secret is shown once; never put it in a URL,
+   service token and a **Service Auth** policy allowing only that token.
+
+2. Copy the token's client ID and secret for entry into the laptop's private
+   controller config file. The secret is shown once; never put it in a URL,
    shell history, browser JavaScript, or the Pi environment file. The
    laptop also needs `CF_ROBOT_ORIGIN_KEY`; do not put any of these values
    in browser JavaScript.
 3. Verify the public hostname rejects a request without Access credentials,
    then verify `https://robot.example.com/health` succeeds when a client
    supplies the two Access headers. A successful health response does not
-   verify the WebSocket origin key or USB devices. Do not start control until
-   the unauthenticated request is denied. Avoid exposing secrets in shell
-   history or command arguments while testing.
+   verify the WebSocket origin key or USB devices.
 
 Cloudflare documentation: [Tunnel public hostnames](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/),
 [WebSockets](https://developers.cloudflare.com/network/websockets/), and
 [Access service tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/).
+
+## Controller laptop
+
+### Set up and calibrate the leader
+
+Use the same macOS account that will run the CLI or web console. A suggested
+checkout location is `~/Developer/lerobot-slave`; if you already cloned the
+repository elsewhere, use that checkout. Run the commands below from its root:
+
+If you do not have a checkout yet, create one at the suggested path:
+
+```sh
+mkdir -p "$HOME/Developer"
+git clone https://github.com/Davide-Grandis/lerobot-slave.git "$HOME/Developer/lerobot-slave"
+cd "$HOME/Developer/lerobot-slave"
+```
+
+Find the leader's serial device on the Mac with the arm connected:
+
+```sh
+ls /dev/tty.usb* /dev/cu.usb*
+```
+
+Use the full `/dev/tty.usb...` path shown for the leader. If several devices
+are listed, unplug the leader's USB cable, run the command again, reconnect
+it, and run the command once more; the newly appearing device is the leader.
+If no `/dev/tty.usb...` entry appears, resolve the USB connection/driver
+before continuing. Use this same path for calibration and both controller
+commands below; this is the Mac's leader port, not the Pi's follower port.
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -e . 'lerobot[feetech]==0.6.1'
+.venv/bin/lerobot-calibrate \
+  --teleop.type=so101_leader \
+  --teleop.port=/dev/tty.usbmodemYOUR_LEADER_DEVICE \
+  --teleop.id=so101_leader
+```
+
+Replace `python3` with your compatible interpreter as needed and replace
+`/dev/tty.usbmodemYOUR_LEADER_DEVICE` with the path found above. The
+`so101_leader` value passed to `--teleop.id` is the calibration ID; use that
+same ID later as `--arm-id`. Calibration is stored by LeRobot for this local
+user; do not copy the leader calibration to the Pi.
+
+### CLI (phase 1)
+
+The SO-ARM101 leader arm is connected directly, via USB, to the controller laptop.
+
+Keep these credentials in a private configuration file outside the
+repository. The controller reads them from its process environment, so load
+the file in the same Terminal session before starting the CLI or web console.
+
+1. Retrieve the `CF_ROBOT_ORIGIN_KEY` key that was generated on the Pi.
+
+2. In a Mac Terminal, create a private config directory and open a file in
+   the editor:
+
+   ```sh
+   mkdir -p "$HOME/.config/cf-robot"
+   chmod 700 "$HOME/.config/cf-robot"
+   umask 077
+   nano "$HOME/.config/cf-robot/controller.env"
+   ```
+
+   Put these three lines in the file, replacing each placeholder with its
+   value. Keep the single quotes:
+
+   ```sh
+   export CF_ACCESS_CLIENT_ID='YOUR_CLOUDFLARE_CLIENT_ID'
+   export CF_ACCESS_CLIENT_SECRET='YOUR_CLOUDFLARE_CLIENT_SECRET'
+   export CF_ROBOT_ORIGIN_KEY='YOUR_PI_ORIGIN_KEY'
+   ```
+
+3. Set the file permissions:
+
+   ```sh
+   chmod 600 "$HOME/.config/cf-robot/controller.env"
+   ```
+
+4. Before each controller session, load the file and verify that all three
+   values are present without printing them:
+
+   ```sh
+   source "$HOME/.config/cf-robot/controller.env"
+   test -n "$CF_ACCESS_CLIENT_ID" && test -n "$CF_ACCESS_CLIENT_SECRET" && test -n "$CF_ROBOT_ORIGIN_KEY" \
+     && echo "All three credentials loaded"
+   ```
+
+Before using this controller CLI, complete the leader setup above, including
+the one-time leader calibration with `--teleop.id=so101_leader`. This CLI
+connects using that saved calibration; it does not calibrate the leader.
+
+- Run this from the repository root in the Terminal where you loaded the
+  credentials; `.venv/bin/cf-robot-leader` is installed in that checkout.
+- Replace `robot.example.com` with the public hostname configured for the
+  Pi's Tunnel, followed by `/control`.
+- Replace `/dev/tty.usbmodemYOUR_LEADER_DEVICE` with the Mac leader's full
+  serial path found in the leader setup above. It must be the same port used
+  when calibrating the leader, not the Pi follower's port.
+- `so101_leader` is the leader calibration ID from `--teleop.id` in the
+  leader setup above; keep it identical.
+- `--fps 30` sends leader samples at up to 30 frames per second. It is
+  optional (30 is the default); valid values are 1 through 60.
+
+Then run from the repository root:
+
+```sh
+.venv/bin/cf-robot-leader \
+  --url wss://robot.example.com/control \
+  --port /dev/tty.usbmodemYOUR_LEADER_DEVICE \
+  --arm-id so101_leader --fps 30
+```
+
+Press Ctrl-C to stop. The CLI does not silently reconnect after a dropped
+session: inspect the follower, realign both arms, then start again.
+
+### Browser console (phase 2)
+
+Before running the command:
+
+- `https://robot.example.com` is the public hostname you created for the
+  Pi's Tunnel. Replace `robot.example.com` with your actual hostname; do not
+  add `/control` or `/video` to this web-console URL.
+- Replace `/dev/tty.usbmodemYOUR_LEADER_DEVICE` with the Mac leader port
+  identified and used for calibration in the leader setup above.
+- `so101_leader` is the `--teleop.id` used when calibrating this leader. Keep
+  it the same as that calibration ID.
+- Load the laptop credentials in this same Terminal session using the
+  `source "$HOME/.config/cf-robot/controller.env"` command above.
+- Run this from the repository root, where `.venv/bin/cf-robot-web` was
+  installed.
+
+```sh
+.venv/bin/cf-robot-web \
+  --url https://robot.example.com \
+  --port /dev/tty.usbmodemYOUR_LEADER_DEVICE \
+  --arm-id so101_leader
+```
+
+Open `http://127.0.0.1:8080` on the laptop. The page shows the follower
+camera even when control is idle. Its Start and Stop buttons manage the
+leader-arm session. Closing the browser or losing its heartbeat stops control
+after approximately three seconds; use Stop to request a deliberate
+shutdown rather than relying on that timeout.
+The local server only accepts loopback hosts and same-origin control
+requests; do not reverse-proxy it to the internet.
 
 ### Configuration reference
 
@@ -516,42 +546,6 @@ Access hostname. The laptop web console offers `GET /`, `GET /api/status`,
 per second; a missing heartbeat ends a running web control session after
 approximately three seconds. The video connection is independent of the
 control session.
-
-## Laptop: CLI (phase 1)
-
-Set `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, and
-`CF_ROBOT_ORIGIN_KEY` in the laptop process environment from a local secret
-store. The Access token and origin key must match the Pi/Cloudflare setup.
-Run from the repository root:
-
-```sh
-.venv/bin/cf-robot-leader \
-  --url wss://robot.example.com/control \
-  --port /dev/tty.usbmodemYOUR_LEADER_DEVICE \
-  --arm-id so101_leader --fps 30
-```
-
-Press Ctrl-C to stop. The CLI does not silently reconnect after a dropped
-session: inspect the follower, realign both arms, then start again.
-
-## Laptop: browser console (phase 2)
-
-With the same laptop environment variables:
-
-```sh
-.venv/bin/cf-robot-web \
-  --url https://robot.example.com \
-  --port /dev/tty.usbmodemYOUR_LEADER_DEVICE \
-  --arm-id so101_leader
-```
-
-Open `http://127.0.0.1:8080` on the laptop. The page shows the follower
-camera even when control is idle. Its Start and Stop buttons manage the
-leader-arm session. Closing the browser or losing its heartbeat stops control
-after approximately three seconds; use Stop to request a deliberate
-shutdown rather than relying on that timeout.
-The local server only accepts loopback hosts and same-origin control
-requests; do not reverse-proxy it to the internet.
 
 ## Operating runbook
 
