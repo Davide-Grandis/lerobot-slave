@@ -10,22 +10,44 @@ use the same control implementation.
 This is a thin integration around LeRobot hardware drivers, not a LeRobot
 fork. Cloudflare Tunnel, Access, DNS, and credentials are configured manually;
 this repository does not provision Cloudflare resources.
-Source repository: [Davide-Grandis/lerobot-slave](https://github.com/Davide-Grandis/lerobot-slave).
+
+## Table of contents
+
+- [Requirements](#requirements)
+- [Architecture](#architecture)
+- [Before using hardware](#before-using-hardware)
+- [Install and calibrate](#install-and-calibrate)
+  - [Follower side: Raspberry Pi (Debian)](#follower-side-raspberry-pi-debian)
+    - [Configure the Cloudflare Tunnel](#step-1-configure-the-cloudflare-tunnel)
+    - [Install the code](#step-2-install-the-code)
+    - [Install dependencies](#install-dependencies)
+    - [Calibrate the follower arm](#calibrate-the-follower-arm)
+    - [Configure and start the follower service](#configure-and-start-the-follower-service)
+    - [Normal startup and restart](#normal-startup-and-restart)
+    - [Upgrade the Pi from GitHub](#upgrade-the-pi-from-github)
+  - [Cloudflare dashboard setup](#cloudflare-dashboard-setup)
+    - [Map the local app to a public URL](#map-the-local-app-to-a-public-url)
+    - [Protect the hostname with Access](#protect-the-hostname-with-access)
+  - [Leader side: controller laptop](#leader-side-controller-laptop)
+    - [Set up and calibrate the leader](#set-up-and-calibrate-the-leader)
+    - [CLI (phase 1)](#cli-phase-1)
+    - [Browser console (phase 2)](#browser-console-phase-2)
+    - [Configuration reference](#configuration-reference)
+- [Operating runbook](#operating-runbook)
+  - [Troubleshooting](#troubleshooting)
+- [Tests and limitations](#tests-and-limitations)
 
 ## Requirements
 
 | Area | Requirement |
 | --- | --- |
-| Laptop | SO-ARM101 leader attached by USB; Python supported by the selected LeRobot release; serial-device access; network access to the public FQDN. |
-| Raspberry Pi | Headless 64-bit Debian (AArch64); SO-ARM101 follower and UVC-compatible camera attached by USB; serial and video-device access; `systemd`. See the Pi hardware assumptions below. |
+| Laptop | SO-ARM101 leader attached by USB; serial-device access. |
+| Raspberry Pi | Headless 64-bit Debian (AArch64); SO-ARM101 follower and UVC-compatible camera attached by USB; serial and video-device access. |
 | Both hosts | This package, compatible LeRobot/Feetech dependencies, separately calibrated arms, and synchronized clocks (NTP). Use the same tested LeRobot release on both hosts. |
 | Cloudflare | An account with an active zone/FQDN, a named Tunnel with a `cloudflared` connector on the Pi, an Access self-hosted application, and an Access service token. |
-| Safety | A clear workspace, a physical emergency stop, and an operator able to observe the follower. Do not use internet teleoperation for safety-critical motion. |
 
 The package and pinned LeRobot release require Python `>=3.12,<3.14`.
-Check `python3 --version` before installing. Network latency, USB
-permissions, camera availability, and ARM-compatible dependencies must
-be verified on the actual Pi before operation.
+Check `python3 --version` before installing. 
 
 ## Architecture
 
@@ -33,8 +55,6 @@ See [the architecture, protocol, and trust-boundary notes](docs/architecture.md)
 
 ## Before using hardware
 
-- Keep people clear of the follower and provide a **physical emergency stop**.
-  Cloudflare, this software, and a browser Stop button are not safety systems.
 - Calibrate each arm with LeRobot on the machine and under the user account
   that will run it. Use the same calibration ID when starting this software.
   Align the arms to within **5 degrees on every joint** before Start; a larger
@@ -51,18 +71,7 @@ See [the architecture, protocol, and trust-boundary notes](docs/architecture.md)
 
 ## Install and calibrate
 
-Use a `python3` version compatible with both `pyproject.toml` and your chosen
-LeRobot release. This project pins **LeRobot 0.6.1** on both hosts; its
-hardware APIs have been checked against that release, but the complete
-system still needs a physical-arm test. Pi hardware operation is not yet
-verified.
-
-Find stable Pi devices with `ls -l /dev/serial/by-id/ /dev/v4l/by-id/`. The
-leader on macOS usually appears as `/dev/tty.usbmodem...`. Check permissions
-before starting either program; the Pi service user needs serial (`dialout`)
-and camera (`video`) access.
-
-### Raspberry Pi (Debian)
+### Follower side: Raspberry Pi (Debian)
 
 These instructions assume a Raspberry Pi 4 with 4 GB RAM and 64-bit
 Debian (AArch64). The dependency commands below use Python 3.13; check
@@ -342,10 +351,9 @@ Check release changes for new configuration or calibration requirements
 before re-enabling control. `--ff-only` refuses a non-fast-forward update
 instead of discarding local changes.
 
-## Cloudflare dashboard setup
+### Cloudflare dashboard setup
 
-
-### Step 3: Map the local app to a public URL
+#### Map the local app to a public URL
 
 In the Cloudflare dashboard, select the Pi's Tunnel and add a public hostname
 (published application route).
@@ -355,7 +363,7 @@ The controller laptop will use `https://robot.example.com` for health checks or 
 console and `wss://robot.example.com/control` for CLI control; video uses
 `wss://robot.example.com/video`. 
 
-### Protect the hostname with Access
+#### Protect the hostname with Access
 
 Configure Access for the entire hostname before operating the arm:
 
@@ -377,9 +385,9 @@ Cloudflare documentation: [Tunnel public hostnames](https://developers.cloudflar
 [WebSockets](https://developers.cloudflare.com/network/websockets/), and
 [Access service tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/).
 
-## Controller laptop
+### Leader side: controller laptop
 
-### Set up and calibrate the leader
+#### Set up and calibrate the leader
 
 Use the same macOS account that will run the CLI or web console. A suggested
 checkout location is `~/Developer/lerobot-slave`; if you already cloned the
@@ -421,7 +429,7 @@ Replace `python3` with your compatible interpreter as needed and replace
 same ID later as `--arm-id`. Calibration is stored by LeRobot for this local
 user; do not copy the leader calibration to the Pi.
 
-### CLI (phase 1)
+#### CLI (phase 1)
 
 The SO-ARM101 leader arm is connected directly, via USB, to the controller laptop.
 
@@ -493,7 +501,7 @@ Then run from the repository root:
 Press Ctrl-C to stop. The CLI does not silently reconnect after a dropped
 session: inspect the follower, realign both arms, then start again.
 
-### Browser console (phase 2)
+#### Browser console (phase 2)
 
 Before running the command:
 
@@ -606,13 +614,3 @@ smoke tests in `tests/test_integration.py` require the project dependencies
 and `httpx` (install with `pip install -e '.[test]' 'lerobot[feetech]==0.6.1'`
 in a compatible environment); they are skipped when dependencies are
 missing. They use fake hardware, not a Cloudflare account.
-
-Before live use, perform a supervised two-arm/camera acceptance test for
-calibration, Access denial, video, network loss, Pi power cycle, and torque
-behavior on disconnect. This repository has **not** verified those
-conditions on your hardware. Internet latency is variable; this system
-does not guarantee a 30 Hz control rate. Video is JPEG-over-WebSocket, not
-low-latency WebRTC. Lower its resolution/fps if it competes with control
-traffic. The implementation supports one SO-ARM101 pair and one camera;
-it does not provide recording, force feedback, autonomous recovery, or
-a certified emergency stop.
