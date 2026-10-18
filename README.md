@@ -389,12 +389,29 @@ Cloudflare documentation: [Tunnel public hostnames](https://developers.cloudflar
 
 #### Set up and calibrate the leader
 
-The suggested folder location is `~/Developer/lerobot-slave`. Run the commands below from its root:
+The suggested folder location is `~/Developer/lerobot-slave`. Run the
+commands below from its root.
 
-This project does not support Python 3.14. Use Python 3.13 for these
-commands and check `python3.13 --version` first. If it is not installed,
-install Python 3.13 with your package manager (for Homebrew, run
-`brew install python@3.13`).
+This project supports Python 3.12 and 3.13; the commands here use Python
+3.13. A virtual environment uses the interpreter that creates it, so do not
+use `python3 -m venv` if `python3 --version` reports 3.14. Check both:
+
+```sh
+python3 --version
+python3.13 --version
+```
+
+If `python3.13` is not installed, install it separately. For Homebrew:
+
+```sh
+brew install python@3.13
+```
+
+This installs a Python 3.13 interpreter; it does not change the macOS
+`python3` default. Use `python3.13 -m venv .venv` below to create the
+project environment with the supported interpreter. If you already created
+`.venv` with Python 3.14, rename it first (for example,
+`mv .venv .venv-py314`) rather than reusing it.
 
 ```sh
 mkdir -p "$HOME/Developer"
