@@ -46,8 +46,8 @@ this repository does not provision Cloudflare resources.
 | Both hosts | This package, compatible LeRobot/Feetech dependencies, separately calibrated arms, and synchronized clocks (NTP). Use the same tested LeRobot release on both hosts. |
 | Cloudflare | An account with an active zone/FQDN, a named Tunnel with a `cloudflared` connector on the Pi, an Access self-hosted application, and an Access service token. |
 
-The package and pinned LeRobot release require Python `>=3.12,<3.14`.
-Check `python3 --version` before installing. 
+The package and pinned LeRobot release require Python `>=3.12,<3.14`;
+Python 3.14 is not supported. The Raspberry Pi instructions use Python 3.13.
 
 ## Architecture
 
@@ -391,6 +391,11 @@ Cloudflare documentation: [Tunnel public hostnames](https://developers.cloudflar
 
 The suggested folder location is `~/Developer/lerobot-slave`. Run the commands below from its root:
 
+This project does not support Python 3.14. Use Python 3.13 for these
+commands and check `python3.13 --version` first. If it is not installed,
+install Python 3.13 with your package manager (for Homebrew, run
+`brew install python@3.13`).
+
 ```sh
 mkdir -p "$HOME/Developer"
 git clone https://github.com/Davide-Grandis/lerobot-slave.git "$HOME/Developer/lerobot-slave"
@@ -400,30 +405,33 @@ cd "$HOME/Developer/lerobot-slave"
 Find the leader's serial device on the Mac with the arm connected:
 
 ```sh
-ls /dev/tty.usb* /dev/cu.usb*
+ls /dev/tty.usb*
 ```
 
-Use the full `/dev/tty.usb...` path shown for the leader. If several devices
-are listed, unplug the leader's USB cable, run the command again, reconnect
-it, and run the command once more; the newly appearing device is the leader.
-If no `/dev/tty.usb...` entry appears, resolve the USB connection/driver
-before continuing. Use this same path for calibration and both controller
-commands below; this is the Mac's leader port, not the Pi's follower port.
+Create a venv environment and install the project.
+
+Use the full `/dev/tty.usb...` path shown. If several adapters are
+connected, unplug the leader's USB cable, run the command again, reconnect
+it, and run the command once more; the newly appearing `tty` path is the
+leader. Use this same path for calibration and both controller commands below.
 
 ```sh
-python3 -m venv .venv
+python3.13 -m venv .venv
+.venv/bin/python --version
 .venv/bin/python -m pip install -e . 'lerobot[feetech]==0.6.1'
+```
+
+Calibration: starts LeRobot’s interactive calibration for the SO-ARM101 leader.
+
+```sh
 .venv/bin/lerobot-calibrate \
   --teleop.type=so101_leader \
   --teleop.port=/dev/tty.usbmodemYOUR_LEADER_DEVICE \
   --teleop.id=so101_leader
 ```
 
-Replace `python3` with your compatible interpreter as needed and replace
-`/dev/tty.usbmodemYOUR_LEADER_DEVICE` with the path found above. The
-`so101_leader` value passed to `--teleop.id` is the calibration ID; use that
-same ID later as `--arm-id`. Calibration is stored by LeRobot for this local
-user; do not copy the leader calibration to the Pi.
+Replace `/dev/tty.usbmodemYOUR_LEADER_DEVICE` with the path found above. The
+`so101_leader` value passed to `--teleop.id` is the calibration ID; will use the same later as   `--arm-id`. Calibration is stored by LeRobot.
 
 #### CLI (phase 1)
 
