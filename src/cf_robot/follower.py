@@ -80,25 +80,33 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                     }
                 )
                 last_seq = 0
-                last_status = time.monotonic()
+                last_status = 0.0
                 while True:
                     if session.error:
                         await ws.send_json({"type": "error", "message": session.error})
                         return
                     try:
-                        raw = await asyncio.wait_for(ws.receive_text(), timeout=0.1)
+                        raw = await asyncio.wait_for(ws.receive_text(), timeout=0.05)
                     except asyncio.TimeoutError:
-                        if time.monotonic() - last_status >= 1:
-                            await ws.send_json({"type": "status", "state": session.state})
-                            last_status = time.monotonic()
-                        continue
-                    try:
-                        seq, action = validate_command(json.loads(raw), last_seq)
-                        session.submit(action)
-                        last_seq = seq
-                    except (ValueError, TypeError) as exc:
-                        await ws.send_json({"type": "error", "message": str(exc)})
-                        return
+                        raw = None
+                    if raw is not None:
+                        try:
+                            seq, action = validate_command(json.loads(raw), last_seq)
+                            session.submit(action)
+                            last_seq = seq
+                        except (ValueError, TypeError) as exc:
+                            await ws.send_json({"type": "error", "message": str(exc)})
+                            return
+                    if time.monotonic() - last_status >= 0.1:
+                        with session.lock:
+                            status = {
+                                "type": "status",
+                                "state": session.state,
+                                "observation": dict(session.observation or {}),
+                                "observed_at": session.observed_at,
+                            }
+                        await ws.send_json(status)
+                        last_status = time.monotonic()
             except WebSocketDisconnect:
                 pass
             finally:
@@ -120,6 +128,44 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             await ws.send_json({"type": "error", "message": message})
             await ws.close(code=1008)
 
+        try:
+            raw = await asyncio.wait_for(ws.receive_text(), timeout=10)
+            message = json.loads(raw)
+        except asyncio.TimeoutError:
+            await reject("timed out waiting for an update request")
+            return
+        except json.JSONDecodeError:
+            await reject("invalid update request")
+            return
+        except WebSocketDisconnect:
+            return
+
+        if (
+            isinstance(message, dict)
+            and message.get("version") == VERSION
+            and message.get("type") == "update_status"
+            and isinstance(message.get("request_id"), str)
+            and len(message["request_id"]) == 32
+            and all(char in "0123456789abcdef" for char in message["request_id"])
+            and set(message) == {"version", "type", "request_id"}
+        ):
+            request_id = message["request_id"]
+            status = read_update_status()
+            if not status or status.get("request_id") != request_id:
+                queued_id = ""
+                try:
+                    queued_id = UPDATE_REQUEST.read_text(encoding="ascii").strip()
+                except OSError:
+                    pass
+                state = "queued" if queued_id == request_id else "pending"
+                status = {"request_id": request_id, "state": state}
+            await ws.send_json({"type": "update_status", "version": VERSION, **status})
+            await ws.close()
+            return
+
+        if message != {"version": VERSION, "type": "update"}:
+            await reject("unsupported update request")
+            return
         if update_requested or UPDATE_REQUEST.exists():
             await reject("an update is already queued")
             return
@@ -133,21 +179,6 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
         )
         if updater.returncode != 0:
             await reject("remote updater is not installed or enabled; run one-time setup over SSH")
-            return
-
-        try:
-            raw = await asyncio.wait_for(ws.receive_text(), timeout=10)
-            message = json.loads(raw)
-        except asyncio.TimeoutError:
-            await reject("timed out waiting for an update request")
-            return
-        except json.JSONDecodeError:
-            await reject("invalid update request")
-            return
-        except WebSocketDisconnect:
-            return
-        if message != {"version": VERSION, "type": "update"}:
-            await reject("unsupported update request")
             return
 
         request_id = uuid.uuid4().hex

@@ -1,0 +1,9 @@
+{
+  "name": "cf-robot-operator-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "node --experimental-default-type=module --test"
+  }
+}

@@ -33,4 +33,4 @@ cf-robot-update = "cf_robot.update_client:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-cf_robot = ["index.html"]
+cf_robot = ["operator/*.html", "operator/*.js", "operator/*.css"]

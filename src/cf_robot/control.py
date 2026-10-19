@@ -10,6 +10,7 @@ from cf_robot.protocol import ProtocolError, validate_action
 LOG = logging.getLogger(__name__)
 MAX_STEP_DEG = 5.0
 WATCHDOG_S = 0.5
+OBSERVATION_INTERVAL_S = 0.1
 
 
 class FollowerSession:
@@ -26,6 +27,8 @@ class FollowerSession:
         self.state = "connecting"
         self.error = None
         self.initial_observation = None
+        self.observation = None
+        self.observed_at = None
         self.target = None
         self.received_at = 0.0
         self.thread = threading.Thread(target=self._run, name="follower-control", daemon=True)
@@ -60,12 +63,15 @@ class FollowerSession:
             robot.connect(calibrate=False)
             previous = validate_action(joint_positions(robot.get_observation()))
             self.initial_observation = dict(previous)
+            self.observation = dict(previous)
+            self.observed_at = time.time()
             with self.lock:
                 self.state = "ready"
             self.ready.set()
             armed = False
+            last_observation = time.monotonic()
             while not self.stopped.is_set():
-                self.wakeup.wait(timeout=0.02)
+                self.wakeup.wait(timeout=0.01)
                 self.wakeup.clear()
                 with self.lock:
                     target, received_at = self.target, self.received_at
@@ -74,35 +80,41 @@ class FollowerSession:
                     break
                 if armed and time.monotonic() - received_at > self.watchdog:
                     raise ProtocolError("control stream timed out; reconnect and align arms")
-                if target is None:
-                    continue
-                if time.monotonic() - received_at > self.watchdog:
-                    raise ProtocolError("queued command expired")
-                jumps = {
-                    name: target[name] - previous[name]
-                    for name in previous
-                    if abs(target[name] - previous[name]) > self.max_step
-                }
-                if jumps:
-                    baseline_label = "follower" if not armed else "previous leader"
-                    next_step = (
-                        "align arms before starting"
-                        if not armed
-                        else "reduce per-sample movement and retry"
-                    )
-                    details = "\n".join(
-                        f"  - {name}: {baseline_label}={previous[name]:.2f}, "
-                        f"leader={target[name]:.2f}, delta={delta:+.2f}"
-                        for name, delta in jumps.items()
-                    )
-                    raise ProtocolError(
-                        f"joint jump exceeds {self.max_step:g}-degree limit:\n"
-                        f"{details}\n"
-                        f"{next_step}"
-                    )
-                robot.send_action(target)
-                previous = target
-                armed = True
+                if target is not None:
+                    if time.monotonic() - received_at > self.watchdog:
+                        raise ProtocolError("queued command expired")
+                    jumps = {
+                        name: target[name] - previous[name]
+                        for name in previous
+                        if abs(target[name] - previous[name]) > self.max_step
+                    }
+                    if jumps:
+                        baseline_label = "follower" if not armed else "previous leader"
+                        next_step = (
+                            "align arms before starting"
+                            if not armed
+                            else "reduce per-sample movement and retry"
+                        )
+                        details = "\n".join(
+                            f"  - {name}: {baseline_label}={previous[name]:.2f}, "
+                            f"leader={target[name]:.2f}, delta={delta:+.2f}"
+                            for name, delta in jumps.items()
+                        )
+                        raise ProtocolError(
+                            f"joint jump exceeds {self.max_step:g}-degree limit:\n"
+                            f"{details}\n"
+                            f"{next_step}"
+                        )
+                    robot.send_action(target)
+                    previous = target
+                    armed = True
+                if time.monotonic() - last_observation >= OBSERVATION_INTERVAL_S:
+                    # Keep servo readback in the sole hardware-owner thread.
+                    observed = validate_action(joint_positions(robot.get_observation()))
+                    with self.lock:
+                        self.observation = observed
+                        self.observed_at = time.time()
+                    last_observation = time.monotonic()
         except Exception as exc:
             if isinstance(exc, ProtocolError):
                 LOG.warning("Follower session stopped: %s", exc)

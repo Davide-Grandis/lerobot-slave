@@ -4,8 +4,10 @@ This project splits LeRobot teleoperation across two computers. The operator's
 laptop reads an SO-ARM101 leader over USB; a Debian Raspberry Pi drives an
 SO-ARM101 follower over USB and reads its USB camera. The laptop connects to
 the Pi through a Cloudflare-protected public FQDN. Phase 1 is a CLI; phase 2
-adds a laptop-local browser console with follower-camera video. Both modes
-use the same control implementation.
+adds a Cloudflare-hosted operator app with D1 session records, live follower
+video, measured servo readback, and both manual and leader-arm controls. A
+loopback Python agent on the controller laptop retains the hardware and
+credential boundary.
 
 This is a thin integration around LeRobot hardware drivers, not a LeRobot
 fork. Cloudflare Tunnel, Access, DNS, and credentials are configured manually;
@@ -15,6 +17,7 @@ this repository does not provision Cloudflare resources.
 
 - [Requirements](#requirements)
 - [Architecture](#architecture)
+- [Controller laptop operations](#controller-laptop-operations)
 - [Before using hardware](#before-using-hardware)
 - [Install and calibrate](#install-and-calibrate)
   - [Follower side: Raspberry Pi (Debian)](#follower-side-raspberry-pi-debian)
@@ -35,7 +38,7 @@ this repository does not provision Cloudflare resources.
     - [CLI (phase 1)](#cli-phase-1)
     - [Remote follower parking commands (WSS)](#remote-follower-parking-commands-wss)
     - [Update the Pi over WSS](#update-the-pi-over-wss)
-    - [Browser console (phase 2)](#browser-console-phase-2)
+    - [Cloud-hosted operator app (phase 2)](#cloud-hosted-operator-app-phase-2)
     - [Configuration reference](#configuration-reference)
 - [Operating runbook](#operating-runbook)
   - [Troubleshooting](#troubleshooting)
@@ -45,10 +48,10 @@ this repository does not provision Cloudflare resources.
 
 | Area | Requirement |
 | --- | --- |
-| Laptop | SO-ARM101 leader attached by USB; serial-device access. |
+| Controller laptop | This package and serial-device access; an SO-ARM101 leader attached by USB is required for leader-stream mode and optional for manual-only browser control. |
 | Raspberry Pi | Headless 64-bit Debian (AArch64); SO-ARM101 follower and UVC-compatible camera attached by USB; serial and video-device access. |
 | Both hosts | This package, compatible LeRobot/Feetech dependencies, separately calibrated arms, and synchronized clocks (NTP). Use the same tested LeRobot release on both hosts. |
-| Cloudflare | An account with an active zone/FQDN, a named Tunnel with a `cloudflared` connector on the Pi, an Access self-hosted application, and an Access service token. |
+| Cloudflare | An account with an active zone/FQDN, a named Tunnel with a `cloudflared` connector on the Pi, an Access self-hosted application and service token, a Worker protected by Access, and a D1 database for operator records. |
 
 The package and pinned LeRobot release require Python `>=3.12,<3.14`;
 Python 3.14 is not supported. The Raspberry Pi instructions use Python 3.13.
@@ -57,12 +60,19 @@ Python 3.14 is not supported. The Raspberry Pi instructions use Python 3.13.
 
 See [the architecture, protocol, and trust-boundary notes](docs/architecture.md).
 
+## Controller laptop operations
+
+See the [controller-laptop operations guide](docs/controller-operations.md)
+for arm calibration, parking-pose commands, teleoperation, and Pi updates
+over WSS.
+
 ## Before using hardware
 
-- Calibrate each arm with LeRobot on the machine and under the user account
-  that will run it. Use the same calibration ID when starting this software.
-  Align the arms to within **5 degrees on every joint** before Start; a larger
-  jump is rejected instead of being sent to the follower.
+- Calibrate each arm you will use with LeRobot on the machine and under the
+  user account that will run it. Use the same calibration ID when starting it.
+  Before leader streaming, align leader and follower within **5 units on each
+  joint**; a larger jump is rejected instead of being sent to the follower.
+  Manual mode starts from the follower's measured pose and sends bounded jogs.
 - Synchronize the laptop and Pi clocks with NTP. Commands more than 500 ms old
   (or over 250 ms in the future) are rejected. If latency or jitter approaches
   this limit, do not operate the robot through this path.
@@ -72,6 +82,8 @@ See [the architecture, protocol, and trust-boundary notes](docs/architecture.md)
   on disconnect or Pi reboot. Do not rely on software to hold a load.
 - Only one control client and one video client are allowed at a time. The
   follower never automatically resumes movement after a failure or reboot.
+- The hosted operator page requires a live follower camera before connecting
+  the control session; loss of fresh camera frames stops browser control.
 
 ## Install and calibrate
 
@@ -616,8 +628,13 @@ parking pose for these Mac commands is saved locally at
 and `parking_set` scripts instead use `/var/lib/cf-robot/parking/`.
 
 The Pi service must also be updated to a version that includes the measured
-pose in its WSS `ready` message. After pulling the client update on the Mac,
-refresh its editable installation to create the new command entry points:
+pose in its WSS `ready` message. First, update the Mac checkout from its root:
+
+```sh
+git pull --ff-only
+```
+
+Then refresh the editable installation to create the new command entry points:
 
 ```sh
 .venv/bin/python -m pip install -e . 'lerobot[feetech]==0.6.1'
@@ -653,10 +670,10 @@ Mac Terminal and run:
 .venv/bin/cf-robot-update
 ```
 
-The client requests the fixed `origin/main` fast-forward update over the
-Cloudflare Tunnel and polls `/health` until the Pi reports success or failure.
-It accepts no arbitrary shell commands or refs. Stop teleoperation and close
-the camera stream first; the Pi rejects updates while either session is active.
+The client requests the fixed `origin/main` fast-forward update and polls its
+status over the same WSS tunnel. It accepts no arbitrary shell commands or
+refs. Stop teleoperation and close the camera stream first; the Pi rejects
+updates while either session is active.
 If an update fails, the status reports the failed stage; local checkout
 changes are refused.
 
@@ -665,36 +682,16 @@ configured GitHub repository's `main` branch, refreshes dependencies, and
 restarts the follower. The Mac does not need the Pi's follower USB path; that
 remains in the Pi's `FOLLOWER_PORT` setting.
 
-#### Browser console (phase 2)
+#### Cloud-hosted operator app (phase 2)
 
-Before running the command:
-
-- `https://robot.example.com` is the public hostname you created for the
-  Pi's Tunnel. Replace `robot.example.com` with your actual hostname; do not
-  add `/control` or `/video` to this web-console URL.
-- Replace `/dev/tty.usbmodemYOUR_LEADER_DEVICE` with the Mac leader port
-  identified and used for calibration in the leader setup above.
-- `so101_leader` is the `--teleop.id` used when calibrating this leader. Keep
-  it the same as that calibration ID.
-- Load the laptop credentials in this same Terminal session using the
-  `source "$HOME/.config/cf-robot/controller.env"` command above.
-- Run this from the repository root, where `.venv/bin/cf-robot-web` was
-  installed.
-
-```sh
-.venv/bin/cf-robot-web \
-  --url https://robot.example.com \
-  --port /dev/tty.usbmodemYOUR_LEADER_DEVICE \
-  --arm-id so101_leader
-```
-
-Open `http://127.0.0.1:8080` on the laptop. The page shows the follower
-camera even when control is idle. Its Start and Stop buttons manage the
-leader-arm session. Closing the browser or losing its heartbeat stops control
-after approximately three seconds; use Stop to request a deliberate
-shutdown rather than relying on that timeout.
-The local server only accepts loopback hosts and same-origin control
-requests; do not reverse-proxy it to the internet.
+The operator UI is deployed as Cloudflare Worker Static Assets and protected
+by Cloudflare Access. D1 stores the robot display record and low-volume
+session/audit metadata; it is not used for video or per-frame commands.
+The browser pairs with the controller laptop's loopback agent, which retains
+LeRobot, USB access, Access credentials, and the direct WSS path to the Pi.
+Follow [the operator app setup and runbook](docs/operator-app.md) to create
+the Worker/D1 resources, protect the app, deploy it, pair the browser, and
+start control.
 
 ### Configuration reference
 
@@ -705,20 +702,22 @@ requests; do not reverse-proxy it to the internet.
 | `CAMERA_DEVICE` | Pi environment file | Camera path passed to `--camera`; prefer `/dev/v4l/by-id/...`. |
 | `CF_ROBOT_ORIGIN_KEY` | Pi environment file **and** laptop environment | Same random key on both ends (minimum 32 characters); sent only during the control/video WebSocket handshakes. |
 | `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` | Laptop environment only | Access service token used for public `wss://` requests; never place these on the Pi or in browser code. |
+| `CF_ROBOT_OPERATOR_ORIGIN` | Laptop environment or `cf-robot-web --operator-origin` | Exact HTTPS origin allowed to pair with the loopback controller agent. |
+| `CF_ROBOT_BRIDGE_TOKEN` | Optional laptop environment | Pairing code for the hosted UI; if unset, a one-run code is generated and printed locally. Never put it in D1 or a URL. |
 | `CF_ROBOT_CONTROL_URL` | Laptop `controller.env` | Public WSS control URL used by remote parking commands, for example `wss://robot.example.com/control`. |
 | `HF_HOME` | Pi service unit and calibration command | LeRobot/Hugging Face data directory for the `robot` user. |
 | `--listen-port` | Pi follower CLI | Loopback HTTP/WebSocket port, default `8765`; update Tunnel origin if changed. |
 | `--camera-width`, `--camera-height`, `--camera-fps` | Pi follower CLI | Video capture defaults `640`, `480`, `10`; fps must be 1-30. Update the unit if changing them. |
 | `--fps` | Laptop leader CLI or web CLI | Maximum leader action sampling rate, default `30`, accepted range 1-60; not a guaranteed end-to-end rate. |
-| `--listen-port` | Laptop web CLI | Loopback web-console port, default `8080`. |
+| `--listen-port` | Laptop web CLI | Loopback controller API port, default `8080`. |
+| `--operator-origin` | Laptop web CLI | Exact HTTPS origin of the Cloudflare-hosted operator app. |
 
 The Pi offers `GET /health`, `WS /control`, `WS /video`, and `WS /update` behind the same
-Access hostname. The laptop web console offers `GET /`, `GET /api/status`,
-`POST /api/start`, `POST /api/stop`, `POST /api/heartbeat`, and
-`WS /ws/video` **only on localhost**. Its browser sends a heartbeat once
-per second; a missing heartbeat ends a running web control session after
-approximately three seconds. The video connection is independent of the
-control session.
+Access hostname. The laptop agent listens only on loopback and exposes the
+operator UI plus status, video-frame, start/stop, emergency-stop, mode, leader,
+manual-jog, and heartbeat APIs. The hosted page polls measured state and the
+latest JPEG frame. A missing browser heartbeat stops an active control session
+after approximately three seconds; stale video also stops control.
 
 ## Operating runbook
 
@@ -726,19 +725,21 @@ control session.
    any load the arm could drop if torque is lost. Have someone able to stop
    the follower locally. Do not begin with an unobserved arm.
 2. From the laptop, confirm `/health` is reachable through Access and, when
-   using the web console, that the camera view works. Check that laptop/Pi
-   clocks are synchronized. The
+   using the operator app, pair the local agent and verify the live camera.
+   Check that laptop/Pi clocks are synchronized. The
    protected health request verifies the service/Tunnel path, not that the
    USB arm or camera is ready. Pi login and `systemctl` commands are only
    needed for initial setup or troubleshooting, not each startup.
-3. Align the leader and follower poses (all six joints within 5 degrees),
-   keep the follower clear, then start **one** CLI or web control session.
-   The Pi connects to the follower on demand. The web camera may already
-   be visible, but that alone does not start motion.
-4. Move the leader slowly while watching the follower. If the session
-   reports an error, stalls, or the follower behaves unexpectedly, use the
-   physical stop first. In normal operation press Stop or Ctrl-C; verify
-   the follower is stationary before leaving.
+3. For leader streaming, align the leader and follower within 5 units on all
+   joints. For manual mode, start from the measured follower pose. Keep the
+   follower clear, verify the live camera, then start **one** control session.
+   The Pi connects to the follower on demand; connecting alone does not send
+   a motion target.
+4. Move the leader slowly or jog one follower joint at a time while watching
+   both the measured pose and camera. If the session reports an error, stalls,
+   or the follower behaves unexpectedly, use the physical stop first. In
+   normal operation press Stop or Ctrl-C; verify the follower is stationary
+   before leaving.
 5. After a timeout, disconnect, Pi reboot, or rejected joint jump, inspect
    both arms, re-align, and start a **new** session. The code does not
    automatically reconnect or replay previous commands.
@@ -763,7 +764,7 @@ delay software shutdown.
 | TLS certificate verification fails on macOS with WARP connected | Switch the WARP profile to DNS-only mode and retry; the WARP traffic proxy can interfere with TLS verification. |
 | `stale command or unsynchronized clocks` | NTP on both hosts and actual network delay/jitter; do not loosen freshness checks casually. |
 | `joint jump exceeds limit` | The error lists each offending joint on an indented line with its prior reference (initial follower reading or previous leader target), current leader command, and difference in degrees. Align before starting; during motion, reduce per-sample movement and retry. |
-| Web control stops when tab is hidden or closed | The page must continue sending heartbeats. Reopen it, inspect the follower, re-align, and restart. |
+| Web control stops when tab is hidden or closed | The page must continue sending heartbeats and receiving camera frames. Reopen it, inspect the follower, re-align if using the leader, and restart. |
 
 ## Tests and limitations
 

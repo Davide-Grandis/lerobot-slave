@@ -88,6 +88,15 @@ class OriginTests(unittest.TestCase):
                         response = socket.receive_json()
                     self.assertEqual(response["type"], "update_queued")
                     self.assertEqual(request_file.read_text(), response["request_id"])
+                    with client.websocket_connect("/update", headers=self.headers) as socket:
+                        socket.send_json({
+                            "version": 1,
+                            "type": "update_status",
+                            "request_id": response["request_id"],
+                        })
+                        status = socket.receive_json()
+                    self.assertEqual(status["type"], "update_status")
+                    self.assertEqual(status["state"], "queued")
 
     def test_web_controls_require_same_origin(self):
         async def fake_runner(url, port, arm_id, fps, stop, on_status):
@@ -111,9 +120,11 @@ class OriginTests(unittest.TestCase):
             app = create_web_app("ws://127.0.0.1:8765", "unused", "test",
                                  runner=fake_runner, heartbeat_timeout=0.2)
             with TestClient(app, base_url="http://127.0.0.1:8080") as client:
-                client.post("/api/start", headers={"origin": "http://127.0.0.1:8080"})
+                headers = {"origin": "http://127.0.0.1:8080"}
+                client.post("/api/start", headers=headers)
                 self.assertTrue(wait_for(
-                    lambda: client.get("/api/status").json()["error"] == "Browser heartbeat lost; control stopped."
+                    lambda: client.get("/api/status", headers=headers).json()["error"]
+                    == "Browser heartbeat lost; control stopped."
                 ))
 
 

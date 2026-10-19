@@ -10,6 +10,7 @@ class FakeFollower:
         self.connected = False
         self.disconnected = False
         self.actions = []
+        self.observation = {joint: 0.0 for joint in JOINTS}
 
     def connect(self, calibrate=True):
         if calibrate:
@@ -17,10 +18,11 @@ class FakeFollower:
         self.connected = True
 
     def get_observation(self):
-        return {joint: 0.0 for joint in JOINTS}
+        return dict(self.observation)
 
     def send_action(self, action):
         self.actions.append(action)
+        self.observation = dict(action)
 
     def disconnect(self):
         self.disconnected = True
@@ -54,6 +56,12 @@ class ControlTests(unittest.TestCase):
         time.sleep(0.15)
         self.assertEqual(self.robot.actions, [])
         self.assertEqual(self.session.state, "ready")
+
+    def test_servo_feedback_is_refreshed_without_a_control_command(self):
+        target = {joint: 2.0 for joint in JOINTS}
+        self.robot.observation = target
+        self.assertTrue(wait_for(lambda: self.session.observation == target))
+        self.assertIsNotNone(self.session.observed_at)
 
     def test_command_then_watchdog_disarms(self):
         self.session.submit({joint: 1.0 for joint in JOINTS})
