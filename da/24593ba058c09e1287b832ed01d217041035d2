@@ -1,0 +1,21 @@
+scripts/parking_record
+  s_93e8a4658813d1::t_734d03a59f0bac 1-5
+scripts/parking_set
+  s_93e8a4658813d1::t_194d77d1bd1bbb 1-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "da24593ba058c09e1287b832ed01d217041035d2",
+  "prompts": {},
+  "sessions": {
+    "s_93e8a4658813d1": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "troubled-jackfruit",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
