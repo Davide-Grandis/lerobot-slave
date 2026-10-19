@@ -76,8 +76,21 @@ class FollowerSession:
                     continue
                 if time.monotonic() - received_at > self.watchdog:
                     raise ProtocolError("queued command expired")
-                if any(abs(target[name] - previous[name]) > self.max_step for name in previous):
-                    raise ProtocolError("joint jump exceeds limit; align arms before starting")
+                jumps = {
+                    name: target[name] - previous[name]
+                    for name in previous
+                    if abs(target[name] - previous[name]) > self.max_step
+                }
+                if jumps:
+                    details = ", ".join(
+                        f"{name}: follower={previous[name]:.2f}, "
+                        f"leader={target[name]:.2f}, delta={delta:+.2f}"
+                        for name, delta in jumps.items()
+                    )
+                    raise ProtocolError(
+                        f"joint jump exceeds {self.max_step:g}-degree limit "
+                        f"({details}); align arms before starting"
+                    )
                 robot.send_action(target)
                 previous = target
                 armed = True

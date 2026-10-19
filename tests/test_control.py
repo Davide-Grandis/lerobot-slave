@@ -61,10 +61,15 @@ class ControlTests(unittest.TestCase):
         self.assertIn("timed out", self.session.error)
 
     def test_initial_jump_is_rejected(self):
-        self.session.submit({joint: 20.0 for joint in JOINTS})
+        action = {joint: 0.0 for joint in JOINTS}
+        action["wrist_roll.pos"] = 20.0
+        self.session.submit(action)
         self.assertTrue(wait_for(lambda: self.session.state == "error"))
         self.assertEqual(self.robot.actions, [])
-        self.assertIn("align arms", self.session.error)
+        self.assertIn("wrist_roll.pos", self.session.error)
+        self.assertIn("follower=0.00", self.session.error)
+        self.assertIn("leader=20.00", self.session.error)
+        self.assertIn("delta=+20.00", self.session.error)
 
     def test_hardware_error_ends_session(self):
         self.session.stop()
