@@ -40,22 +40,25 @@ the leader calibration for the current macOS user. Use the same
 
 ### Follower on the Pi
 
-Follower calibration is LeRobot's interactive hardware calibration. It is
-**not exposed as a WSS command**. Run it once from a Pi terminal, normally
-over SSH from the controller laptop, or repeat it after servicing/replacing
-the arm or losing its calibration:
+Follower calibration is LeRobot's interactive hardware calibration. After
+the Pi's one-time WSS updater setup, you can run it from the Mac with:
 
 ```sh
-sudo systemctl stop cf-robot-follower
-/opt/cf-robot/scripts/calibrate-follower.sh
-sudo systemctl start cf-robot-follower
+.venv/bin/cf-robot-follower-calibrate
 ```
 
-The helper reads the follower port from `/etc/cf-robot/follower.env`, runs
-LeRobot as the `robot` service user, and saves calibration as
-`so101_follower`. Do not run calibration while a control session is active.
-After the one-time WSS updater setup below, routine operations do not require
-SSH; recalibration still does.
+This runs the fixed LeRobot follower calibrator on the Pi over the authenticated
+`/calibrate` WSS route. It reads `FOLLOWER_PORT` from the Pi configuration,
+runs as `robot`, and uses the `so101_follower` calibration ID. When LeRobot
+asks whether to use an existing calibration or redo it, press Enter to reuse
+it or type `c` and press Enter to recalibrate.
+
+Calibration is interactive and physical: someone must be at the follower to
+move each joint by hand while you respond to the prompts on the Mac. Keep the
+workspace clear and the physical emergency stop accessible. Do not run it
+during teleoperation. The Pi-local
+`/opt/cf-robot/scripts/calibrate-follower.sh` helper remains available as a
+local/SSH fallback.
 
 ## Record or Set the Follower Parking Pose
 
@@ -139,8 +142,8 @@ or choose a Git branch.
 
 ## WSS Scope
 
-The laptop can teleoperate, record/set the follower parking pose, and request
-the fixed Pi update over authenticated WSS. The follower serial port remains
-configured on the Pi. This is **not** a general-purpose remote shell: OS
-package management, arbitrary `systemctl` operations, hardware calibration,
-and initial updater installation are not exposed over WSS.
+The laptop can calibrate the follower interactively, teleoperate, record/set
+the follower parking pose, and request the fixed Pi update over authenticated
+WSS. The follower serial port remains configured on the Pi. This is **not** a
+general-purpose remote shell: OS package management, arbitrary `systemctl`
+operations, and initial updater installation are not exposed over WSS.

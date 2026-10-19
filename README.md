@@ -214,10 +214,13 @@ sudo -u robot test -s /var/lib/cf-robot/lerobot/calibration/robots/so_follower/s
 ```
 
 LeRobot stores the follower calibration under `/var/lib/cf-robot`; both the
-calibration command and service use this location. Calibration is a one-time
-setup step performed over SSH. The service uses the saved calibration and
-does not prompt for calibration at boot or when a client connects. The camera
-needs its device path in the service configuration, but no arm-calibration ID.
+calibration command and service use this location. The Pi helper above is the
+local/SSH option for initial setup. After enabling WSS updates, the controller
+laptop can also run the interactive follower calibration through `/calibrate`
+as described in the [controller operations guide](docs/controller-operations.md).
+Either way, the service uses the saved calibration and does not prompt at boot
+or when a client connects. The camera needs its device path in the service
+configuration, but no arm-calibration ID.
 
 #### Configure and start the follower service
 
@@ -312,9 +315,10 @@ sudo systemctl enable --now cf-robot-update.path
 ```
 
 This is a one-time privileged setup. The existing Access application protects
-the entire hostname, including `/update`, so no additional Tunnel route is
-needed. After this setup, ordinary code and dependency updates can be
-requested from the Mac over WSS without SSH.
+the entire hostname, including `/update` and `/calibrate`, so no additional
+Tunnel route is needed. After this setup, ordinary code and dependency updates
+and interactive follower calibration can be requested from the Mac over WSS
+without SSH.
 
 Check `journalctl -u cf-robot-follower -f` for failures. Confirm both this
 service and the separately installed `cloudflared` service are enabled and
@@ -459,8 +463,9 @@ console and `wss://robot.example.com/control` for CLI control; video uses
 Configure Access for the entire hostname before operating the arm:
 
 1. Create a Cloudflare Access **self-hosted application** covering the whole
-   hostname, including `/health`, `/control`, `/video`, and `/update`. Create a
-   service token and a **Service Auth** policy allowing only that token.
+   hostname, including `/health`, `/control`, `/video`, `/update`, and
+   `/calibrate`. Create a service token and a **Service Auth** policy allowing
+   only that token.
 
 2. Copy the token's client ID and secret for entry into the laptop's private
    controller config file. The secret is shown once; never put it in a URL,
@@ -562,12 +567,13 @@ refresh the editable install as well. This creates new commands such as
 .venv/bin/python -m pip install -e . 'lerobot[feetech]==0.6.1'
 ```
 
-Verify that the WSS update and parking commands are installed:
+Verify that the WSS update, parking, and follower calibration commands are installed:
 
 ```sh
 ls .venv/bin/cf-robot-update \
   .venv/bin/cf-robot-parking-record \
-  .venv/bin/cf-robot-parking-set
+  .venv/bin/cf-robot-parking-set \
+  .venv/bin/cf-robot-follower-calibrate
 ```
 
 #### CLI (phase 1)
@@ -732,11 +738,11 @@ start control.
 | `FOLLOWER_PORT` | Pi `/etc/cf-robot/follower.env` | Follower USB serial path passed to `--port`; prefer `/dev/serial/by-id/...`. |
 | `FOLLOWER_ID` | Pi environment file | Follower LeRobot calibration ID passed to `--arm-id`. |
 | `CAMERA_DEVICE` | Pi environment file | Camera path passed to `--camera`; prefer `/dev/v4l/by-id/...`. |
-| `CF_ROBOT_ORIGIN_KEY` | Pi environment file **and** laptop environment | Same random key on both ends (minimum 32 characters); sent only during the control/video WebSocket handshakes. |
+| `CF_ROBOT_ORIGIN_KEY` | Pi environment file **and** laptop environment | Same random key on both ends (minimum 32 characters); sent on Pi WebSocket handshakes. |
 | `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` | Laptop environment only | Access service token used for public `wss://` requests; never place these on the Pi or in browser code. |
 | `CF_ROBOT_OPERATOR_ORIGIN` | Laptop environment or `cf-robot-web --operator-origin` | Exact HTTPS origin allowed to pair with the loopback controller agent. |
 | `CF_ROBOT_BRIDGE_TOKEN` | Optional laptop environment | Pairing code for the hosted UI; if unset, a one-run code is generated and printed locally. Never put it in D1 or a URL. |
-| `CF_ROBOT_CONTROL_URL` | Laptop `controller.env` | Public WSS control URL used by remote parking commands, for example `wss://robot.example.com/control`. |
+| `CF_ROBOT_CONTROL_URL` | Laptop `controller.env` | Public WSS control URL used by teleoperation, parking, Pi updates, and follower calibration, for example `wss://robot.example.com/control`. |
 | `HF_HOME` | Pi service unit and calibration command | LeRobot/Hugging Face data directory for the `robot` user. |
 | `--listen-port` | Pi follower CLI | Loopback HTTP/WebSocket port, default `8765`; update Tunnel origin if changed. |
 | `--camera-width`, `--camera-height`, `--camera-fps` | Pi follower CLI | Video capture defaults `640`, `480`, `10`; fps must be 1-30. Update the unit if changing them. |
@@ -744,7 +750,8 @@ start control.
 | `--listen-port` | Laptop web CLI | Loopback controller API port, default `8080`. |
 | `--operator-origin` | Laptop web CLI | Exact HTTPS origin of the Cloudflare-hosted operator app. |
 
-The Pi offers `GET /health`, `WS /control`, `WS /video`, and `WS /update` behind the same
+The Pi offers `GET /health`, `WS /control`, `WS /video`, `WS /update`, and
+`WS /calibrate` behind the same
 Access hostname. The laptop agent listens only on loopback and exposes the
 operator UI plus status, video-frame, start/stop, emergency-stop, mode, leader,
 manual-jog, and heartbeat APIs. The hosted page polls measured state and the

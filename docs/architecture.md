@@ -30,7 +30,7 @@ the Pi.
 | --- | --- |
 | [`src/cf_robot/hardware.py`](../src/cf_robot/hardware.py) | Construct LeRobot `SO101Leader`, `SO101Follower`, and `OpenCVCamera`; extract joint observations. |
 | [`src/cf_robot/leader.py`](../src/cf_robot/leader.py) | Connect the laptop leader without interactive calibration; send actions at a configured maximum rate (default 30 fps); stop rather than auto-reconnect after failure. |
-| [`src/cf_robot/follower.py`](../src/cf_robot/follower.py) | Serve `/health`, `/control`, `/video`, and `/update`; authenticate WebSocket upgrades; allow one control and one video connection. |
+| [`src/cf_robot/follower.py`](../src/cf_robot/follower.py) | Serve `/health`, `/control`, `/video`, `/update`, and `/calibrate`; authenticate WebSocket upgrades; allow one control and one video connection. |
 | [`src/cf_robot/control.py`](../src/cf_robot/control.py) | Own the follower in one thread; retain only the latest target; refresh measured servo positions; check command gap and joint jumps; disconnect on stop/error. |
 | [`src/cf_robot/protocol.py`](../src/cf_robot/protocol.py) | Define protocol version 1, joint names, action validation, sequence and timestamp checks. |
 | [`src/cf_robot/auth.py`](../src/cf_robot/auth.py) | Validate the remote URL and attach Access and origin-key headers from the laptop environment. |
@@ -82,14 +82,19 @@ the Pi.
   update from `origin/main`, refreshes dependencies, and restarts the
   follower. The client polls update status over the same WSS route; no shell
   command, branch, or path is accepted from the client.
+- `/calibrate` bridges only LeRobot's fixed follower-calibration command to
+  the Mac. Prompt text and user responses are streamed over the authenticated
+  WSS connection; the serial port and calibration ID are taken from the Pi's
+  service configuration, never from client input. Calibration is interactive
+  and still requires someone physically at the follower to move its joints.
 
 ## Trust boundaries
 
 Cloudflare Access should reject unauthenticated requests to **all** Pi
-paths, including `/update`. The laptop supplies `CF-Access-Client-Id` and
+paths, including `/update` and `/calibrate`. The laptop supplies `CF-Access-Client-Id` and
 `CF-Access-Client-Secret` on the WebSocket upgrade. Independently, the Pi
 requires a shared `CF_ROBOT_ORIGIN_KEY` (at least 32 characters) as
-`X-CF-Robot-Key` on both WebSocket routes. This limits the damage of an
+`X-CF-Robot-Key` on all Pi WebSocket routes. This limits the damage of an
 accidentally unprotected hostname; it does not replace Access or physical
 safety controls. `/health` is HTTP and has no origin-key check, so protect
 it with the same Access application. The app Worker is separately protected

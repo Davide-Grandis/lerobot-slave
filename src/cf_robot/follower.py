@@ -9,6 +9,7 @@ import logging
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 import uuid
 
@@ -22,6 +23,8 @@ from cf_robot.protocol import VERSION, validate_command
 LOG = logging.getLogger(__name__)
 UPDATE_REQUEST = Path("/var/lib/cf-robot/update-request")
 UPDATE_STATUS = Path("/var/lib/cf-robot/update-status.json")
+CALIBRATION_ID = "so101_follower"
+CALIBRATOR = Path(sys.executable).with_name("lerobot-calibrate")
 
 
 def read_update_status():
@@ -41,6 +44,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
     control_lock = asyncio.Lock()
     video_lock = asyncio.Lock()
     update_requested = UPDATE_REQUEST.exists()
+    calibration_requested = False
     follower_factory = factory or (lambda: make_follower(port, arm_id))
     camera_factory = camera_factory or (lambda: make_camera(camera_device, width, height, video_fps))
 
@@ -50,6 +54,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             "service": "cf-robot-follower",
             "version": VERSION,
             "control_busy": control_lock.locked(),
+            "calibration_busy": calibration_requested,
             "update": read_update_status(),
         }
 
@@ -58,10 +63,13 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
         if not hmac.compare_digest(ws.headers.get("x-cf-robot-key", ""), origin_key):
             await ws.close(code=1008)
             return
-        if update_requested:
-            await ws.close(code=1013, reason="follower update in progress")
+        if update_requested or calibration_requested:
+            await ws.close(code=1013, reason="follower maintenance in progress")
             return
         await ws.accept()
+        if update_requested or calibration_requested:
+            await ws.close(code=1013, reason="follower maintenance in progress")
+            return
         if control_lock.locked():
             await ws.close(code=1008, reason="another operator is connected")
             return
@@ -169,6 +177,9 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
         if update_requested or UPDATE_REQUEST.exists():
             await reject("an update is already queued")
             return
+        if calibration_requested:
+            await reject("follower calibration is in progress")
+            return
         if control_lock.locked() or video_lock.locked():
             await reject("stop control and video sessions before updating")
             return
@@ -192,6 +203,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             await asyncio.to_thread(stage_request)
             if (
                 update_requested
+                or calibration_requested
                 or UPDATE_REQUEST.exists()
                 or control_lock.locked()
                 or video_lock.locked()
@@ -207,6 +219,193 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             temporary.unlink(missing_ok=True)
             raise
         finally:
+            try:
+                await ws.close()
+            except (RuntimeError, OSError, WebSocketDisconnect):
+                pass
+
+    @app.websocket("/calibrate")
+    async def calibrate(ws: WebSocket):
+        nonlocal calibration_requested
+        if not hmac.compare_digest(ws.headers.get("x-cf-robot-key", ""), origin_key):
+            await ws.close(code=1008)
+            return
+        await ws.accept()
+
+        async def reject(message):
+            await ws.send_json({"type": "error", "message": message})
+            await ws.close(code=1008)
+
+        try:
+            raw = await asyncio.wait_for(ws.receive_text(), timeout=10)
+            message = json.loads(raw)
+        except asyncio.TimeoutError:
+            await reject("timed out waiting for calibration request")
+            return
+        except json.JSONDecodeError:
+            await reject("invalid calibration request")
+            return
+        except WebSocketDisconnect:
+            return
+        if message != {"version": VERSION, "type": "start"}:
+            await reject("unsupported calibration request")
+            return
+        if calibration_requested or update_requested or UPDATE_REQUEST.exists():
+            await reject("follower maintenance is already in progress")
+            return
+        if control_lock.locked():
+            await reject("stop the follower control session before calibration")
+            return
+        if arm_id != CALIBRATION_ID:
+            await reject(f"this endpoint only calibrates {CALIBRATION_ID}")
+            return
+        if not port:
+            await reject("follower serial port is not configured")
+            return
+        if not CALIBRATOR.is_file() or not os.access(CALIBRATOR, os.X_OK):
+            await reject("LeRobot calibrator is missing from the Pi virtual environment")
+            return
+
+        calibration_requested = True
+        process = None
+        output_task = None
+        receive_task = None
+        wait_task = None
+        client_disconnected = False
+        input_error = None
+
+        async def relay_output():
+            while True:
+                chunk = await process.stdout.read(1024)
+                if not chunk:
+                    return
+                await ws.send_json(
+                    {
+                        "type": "calibration_output",
+                        "text": chunk.decode("utf-8", errors="replace"),
+                    }
+                )
+
+        async def stop_child():
+            if process is None or process.returncode is not None:
+                return
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+
+        try:
+            child_env = os.environ.copy()
+            for name in (
+                "CF_ROBOT_ORIGIN_KEY",
+                "CF_ACCESS_CLIENT_ID",
+                "CF_ACCESS_CLIENT_SECRET",
+                "CF_ROBOT_BRIDGE_TOKEN",
+            ):
+                child_env.pop(name, None)
+            child_env["HF_HOME"] = "/var/lib/cf-robot"
+            child_env["PYTHONUNBUFFERED"] = "1"
+            process = await asyncio.create_subprocess_exec(
+                str(CALIBRATOR),
+                "--robot.type=so101_follower",
+                f"--robot.port={port}",
+                f"--robot.id={CALIBRATION_ID}",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd="/opt/cf-robot",
+                env=child_env,
+            )
+            await ws.send_json({"type": "calibration_started", "version": VERSION})
+            output_task = asyncio.create_task(relay_output())
+            wait_task = asyncio.create_task(process.wait())
+            receive_task = asyncio.create_task(ws.receive_text())
+
+            while not wait_task.done():
+                done, _ = await asyncio.wait(
+                    {wait_task, receive_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if wait_task in done:
+                    break
+                try:
+                    incoming = json.loads(receive_task.result())
+                except json.JSONDecodeError:
+                    input_error = "invalid calibration input message"
+                    await stop_child()
+                    break
+                except WebSocketDisconnect:
+                    client_disconnected = True
+                    await stop_child()
+                    break
+
+                if incoming == {"version": VERSION, "type": "cancel"}:
+                    await stop_child()
+                    break
+                if (
+                    not isinstance(incoming, dict)
+                    or incoming.get("version") != VERSION
+                    or incoming.get("type") != "input"
+                    or set(incoming) != {"version", "type", "text"}
+                    or not isinstance(incoming.get("text"), str)
+                    or len(incoming["text"]) > 256
+                    or "\n" in incoming["text"]
+                    or "\r" in incoming["text"]
+                ):
+                    input_error = "invalid calibration input"
+                    await stop_child()
+                    break
+                if process.stdin is None or process.returncode is not None:
+                    input_error = "calibration process is no longer accepting input"
+                    break
+                process.stdin.write((incoming["text"] + "\n").encode("utf-8"))
+                try:
+                    await process.stdin.drain()
+                except (BrokenPipeError, ConnectionResetError):
+                    input_error = "calibration process closed its input"
+                    break
+                receive_task = asyncio.create_task(ws.receive_text())
+
+            if wait_task is not None:
+                await wait_task
+            if output_task is not None:
+                await output_task
+            if input_error and not client_disconnected:
+                await ws.send_json({"type": "error", "message": input_error})
+            elif not client_disconnected:
+                await ws.send_json(
+                    {
+                        "type": "calibration_finished",
+                        "exit_code": process.returncode,
+                    }
+                )
+        except WebSocketDisconnect:
+            client_disconnected = True
+            await stop_child()
+        except Exception:
+            LOG.exception("Remote follower calibration failed")
+            await stop_child()
+            if not client_disconnected:
+                try:
+                    await ws.send_json(
+                        {"type": "error", "message": "calibration process failed; inspect its output"}
+                    )
+                except (RuntimeError, OSError, WebSocketDisconnect):
+                    pass
+        finally:
+            if process is not None and process.returncode is None:
+                await stop_child()
+            if receive_task is not None and not receive_task.done():
+                receive_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
+                    await receive_task
+            if output_task is not None and not output_task.done():
+                output_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
+                    await output_task
+            calibration_requested = False
             try:
                 await ws.close()
             except (RuntimeError, OSError, WebSocketDisconnect):

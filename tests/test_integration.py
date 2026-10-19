@@ -1,11 +1,13 @@
 """Origin WebSocket smoke tests; run when the optional HTTP test stack is installed."""
 
+import asyncio
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 try:
     import cv2
@@ -97,6 +99,78 @@ class OriginTests(unittest.TestCase):
                         status = socket.receive_json()
                     self.assertEqual(status["type"], "update_status")
                     self.assertEqual(status["state"], "queued")
+
+    def test_calibration_websocket_relays_prompts_and_input(self):
+        processes = []
+
+        class FakeStdin:
+            def __init__(self, process):
+                self.process = process
+                self.inputs = []
+
+            def write(self, value):
+                self.inputs.append(value)
+                self.process.stdout.feed_data(b"\nCalibration saved.\n")
+                self.process.stdout.feed_eof()
+                self.process.returncode = 0
+                self.process.finished.set()
+
+            async def drain(self):
+                pass
+
+        class FakeProcess:
+            def __init__(self):
+                self.stdout = asyncio.StreamReader()
+                self.stdout.feed_data(b"Press c to recalibrate: ")
+                self.returncode = None
+                self.finished = asyncio.Event()
+                self.stdin = FakeStdin(self)
+                processes.append(self)
+
+            async def wait(self):
+                await self.finished.wait()
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+                self.finished.set()
+
+            def kill(self):
+                self.terminate()
+
+        async def create_process(*args, **kwargs):
+            return FakeProcess()
+
+        with patch("cf_robot.follower.CALIBRATOR", Path(sys.executable)), patch(
+            "cf_robot.follower.asyncio.create_subprocess_exec",
+            new=AsyncMock(side_effect=create_process),
+        ):
+            app = create_app(
+                "/dev/null",
+                "so101_follower",
+                factory=FakeFollower,
+                origin_key=self.key,
+            )
+            with TestClient(app) as client:
+                with client.websocket_connect("/calibrate", headers=self.headers) as socket:
+                    socket.send_json({"version": 1, "type": "start"})
+                    self.assertEqual(socket.receive_json()["type"], "calibration_started")
+                    prompt = socket.receive_json()
+                    self.assertEqual(prompt["type"], "calibration_output")
+                    self.assertIn("Press c", prompt["text"])
+                    socket.send_json({
+                        "version": 1,
+                        "type": "input",
+                        "text": "c",
+                    })
+                    output = socket.receive_json()
+                    self.assertEqual(output["type"], "calibration_output")
+                    self.assertIn("Calibration saved", output["text"])
+                    finished = socket.receive_json()
+                    self.assertEqual(finished["type"], "calibration_finished")
+                    self.assertEqual(finished["exit_code"], 0)
+                self.assertEqual(processes[0].stdin.inputs, [b"c\n"])
+                self.assertFalse(client.get("/health").json()["calibration_busy"])
 
     def test_web_controls_require_same_origin(self):
         async def fake_runner(url, port, arm_id, fps, stop, on_status):
