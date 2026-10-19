@@ -10,8 +10,16 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
 from cf_robot.auth import access_headers
-from cf_robot.hardware import make_leader
-from cf_robot.protocol import VERSION, action_message
+from cf_robot.hardware import joint_positions, make_leader
+from cf_robot.parking import (
+    PARKING_STEP_DELAY_S,
+    PARKING_STEP_DEG,
+    parking_steps,
+)
+from cf_robot.protocol import JOINTS, VERSION, action_message, validate_action
+
+STARTUP_SYNC_TOLERANCE = 1.0
+STARTUP_SYNC_SETTLE_TIMEOUT_S = 30.0
 
 
 async def stream_status(socket, on_status):
@@ -24,7 +32,16 @@ async def stream_status(socket, on_status):
     raise ConnectionError("follower connection closed")
 
 
-async def run_teleop(url, port, arm_id, fps=30, stop=None, on_status=None, leader_factory=None):
+async def run_teleop(
+    url,
+    port,
+    arm_id,
+    fps=30,
+    stop=None,
+    on_status=None,
+    leader_factory=None,
+    sync_at_start=False,
+):
     if not 1 <= fps <= 60:
         raise ValueError("fps must be between 1 and 60")
     stop = stop if stop is not None else asyncio.Event()
@@ -37,14 +54,109 @@ async def run_teleop(url, port, arm_id, fps=30, stop=None, on_status=None, leade
         first = json.loads(await asyncio.wait_for(socket.recv(), timeout=25))
         if first.get("type") != "ready" or first.get("version") != VERSION:
             raise RuntimeError(first.get("message", "follower did not become ready"))
+        follower_pose = None
+        if sync_at_start:
+            try:
+                follower_pose = validate_action(first["observation"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "Pi must report its measured follower pose before startup sync"
+                ) from exc
         on_status({"type": "status", "state": "connecting leader"})
         try:
             leader = leader_factory()
             await asyncio.to_thread(leader.connect, calibrate=False)
-            reader = asyncio.create_task(stream_status(socket, on_status))
-            on_status({"type": "status", "state": "running"})
+            latest_feedback = {"observation": None, "observed_at": None}
+
+            def handle_status(message):
+                if message.get("type") == "status" and message.get("observation"):
+                    try:
+                        latest_feedback["observation"] = validate_action(message["observation"])
+                        latest_feedback["observed_at"] = float(message["observed_at"])
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                on_status(message)
+
+            reader = asyncio.create_task(stream_status(socket, handle_status))
             seq = 0
             period = 1 / fps
+            if sync_at_start:
+                initial_leader_pose = validate_action(
+                    joint_positions(await asyncio.to_thread(leader.get_action))
+                )
+                initial_gap = max(
+                    abs(initial_leader_pose[joint] - follower_pose[joint])
+                    for joint in JOINTS
+                )
+                if initial_gap > STARTUP_SYNC_TOLERANCE:
+                    sync_steps = list(parking_steps(follower_pose, initial_leader_pose))
+                    duration = len(sync_steps) * PARKING_STEP_DELAY_S
+                    print("Measured follower and leader startup poses (servo units):")
+                    for joint in JOINTS:
+                        print(
+                            f"  {joint}: follower={follower_pose[joint]:.2f}, "
+                            f"leader={initial_leader_pose[joint]:.2f}, "
+                            f"delta={initial_leader_pose[joint] - follower_pose[joint]:+.2f}"
+                        )
+                    print(
+                        f"Startup sync will move one servo at a time in at most "
+                        f"{PARKING_STEP_DEG:g}-unit steps, taking at least "
+                        f"{duration:.1f} seconds."
+                    )
+                    confirmation = await asyncio.to_thread(
+                        input,
+                        "Clear the workspace, hold the leader still, then type SYNC to proceed: ",
+                    )
+                    if confirmation.strip() != "SYNC":
+                        raise RuntimeError("startup sync cancelled; no targets were sent")
+
+                    active_joint = None
+                    final_target_sent_at = None
+                    for joint, target in sync_steps:
+                        if reader.done():
+                            reader.result()
+                        if joint != active_joint:
+                            on_status(
+                                {"type": "status", "state": f"synchronizing {joint}"}
+                            )
+                            active_joint = joint
+                        seq += 1
+                        await socket.send(
+                            json.dumps(
+                                action_message(seq, target),
+                                separators=(",", ":"),
+                            )
+                        )
+                        final_target_sent_at = time.time()
+                        await asyncio.sleep(PARKING_STEP_DELAY_S)
+
+                    deadline = time.monotonic() + STARTUP_SYNC_SETTLE_TIMEOUT_S
+                    while time.monotonic() < deadline:
+                        if reader.done():
+                            reader.result()
+                        measured = latest_feedback["observation"]
+                        observed_at = latest_feedback["observed_at"]
+                        if (
+                            measured is not None
+                            and observed_at is not None
+                            and final_target_sent_at is not None
+                            and observed_at >= final_target_sent_at
+                            and all(
+                                abs(measured[joint] - initial_leader_pose[joint])
+                                <= STARTUP_SYNC_TOLERANCE
+                                for joint in JOINTS
+                            )
+                        ):
+                            break
+                        await asyncio.sleep(0.1)
+                    else:
+                        raise RuntimeError(
+                            "follower did not reach the startup leader pose within "
+                            f"{STARTUP_SYNC_SETTLE_TIMEOUT_S:g} seconds; inspect both arms"
+                        )
+                on_status({"type": "status", "state": "startup sync complete"})
+
+            on_status({"type": "status", "state": "running"})
             while not stop.is_set():
                 started = time.monotonic()
                 if reader.done():
@@ -75,9 +187,32 @@ def main():
     parser.add_argument("--port", required=True, help="Local leader serial device")
     parser.add_argument("--arm-id", required=True, help="LeRobot leader calibration ID")
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument(
+        "--no-startup-sync",
+        action="store_true",
+        help="disable the confirmed gradual follower-to-leader sync when needed",
+    )
     args = parser.parse_args()
+    last_printed_state = None
+
+    def report_status(message):
+        nonlocal last_printed_state
+        state = message.get("state")
+        if state and state != last_printed_state:
+            print(state)
+            last_printed_state = state
+
     try:
-        asyncio.run(run_teleop(args.url, args.port, args.arm_id, args.fps, on_status=lambda m: print(m["state"])))
+        asyncio.run(
+            run_teleop(
+                args.url,
+                args.port,
+                args.arm_id,
+                args.fps,
+                on_status=report_status,
+                sync_at_start=not args.no_startup_sync,
+            )
+        )
     except KeyboardInterrupt:
         print("Stopped")
     except (OSError, ValueError, RuntimeError, ConnectionError, TimeoutError, WebSocketException) as exc:

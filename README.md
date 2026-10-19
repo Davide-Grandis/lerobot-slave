@@ -70,9 +70,12 @@ over WSS.
 
 - Calibrate each arm you will use with LeRobot on the machine and under the
   user account that will run it. Use the same calibration ID when starting it.
-  Before leader streaming, align leader and follower within **5 units on each
-  joint**; a larger jump is rejected instead of being sent to the follower.
-  Manual mode starts from the follower's measured pose and sends bounded jogs.
+  The CLI's default startup sync can gradually move the follower to the
+  leader's initial measured pose after explicit `SYNC` confirmation. Keep the
+  workspace clear and hold the leader still during this move. The per-target
+  5-unit limit remains in force; without startup sync, align the arms within
+  **5 units on each joint** before leader streaming. Manual mode starts from
+  the follower's measured pose and sends bounded jogs.
 - Synchronize the laptop and Pi clocks with NTP. Commands more than 500 ms old
   (or over 250 ms in the future) are rejected. If latency or jitter approaches
   this limit, do not operate the robot through this path.
@@ -359,8 +362,10 @@ sudo systemctl stop cf-robot-follower
 ```
 
 Review the current and saved positions, clear the workspace, then type `MOVE`
-to confirm. The script moves in steps of at most
-0.25 degree, moving one servo at a time with a short pause between steps.
+to confirm. The script moves one servo at a time in steps of at most 0.1
+degree, with a 0.1-second pause between steps (about 1 degree per second).
+It moves shoulder, elbow, and gripper joints first, then wrist roll and wrist
+flex last.
 This creates a smoother, slower ramp, but the intermediate poses can still
 collide with the workspace. After it finishes, place the leader manually at
 the same pose before starting teleoperation, then restart the follower service:
@@ -656,10 +661,10 @@ To move the follower toward the saved pose, run:
 ```
 
 Clear the workspace and type `MOVE` when prompted. It sends the move as
-small, one-servo-at-a-time action updates over WSS; the server's per-step
-limit and control watchdog remain active. This command does not move the
-leader. Afterward, manually align the leader to the follower before starting
-teleoperation.
+small, one-servo-at-a-time action updates over WSS, with the wrist joints
+last; the server's per-step limit and control watchdog remain active. This
+command does not move the leader. Afterward, manually align the leader to the
+follower before starting teleoperation.
 
 #### Update the Pi over WSS
 

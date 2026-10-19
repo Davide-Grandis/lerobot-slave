@@ -18,8 +18,16 @@ CALIBRATION_FILE = Path(
     "/var/lib/cf-robot/lerobot/calibration/robots/so_follower/so101_follower.json"
 )
 PARKING_FILE = Path("/var/lib/cf-robot/parking/so101_follower.json")
-PARKING_STEP_DEG = 0.25
-PARKING_STEP_DELAY_S = 0.05
+PARKING_STEP_DEG = 0.1
+PARKING_STEP_DELAY_S = 0.1
+PARKING_JOINT_ORDER = (
+    "shoulder_pan.pos",
+    "shoulder_lift.pos",
+    "elbow_flex.pos",
+    "gripper.pos",
+    "wrist_roll.pos",
+    "wrist_flex.pos",
+)
 
 
 def ensure_service_stopped():
@@ -119,7 +127,7 @@ def load_parking_pose():
 
 def parking_steps(start, end, max_step=PARKING_STEP_DEG):
     state = dict(start)
-    for joint in JOINTS:
+    for joint in PARKING_JOINT_ORDER:
         initial = state[joint]
         delta = end[joint] - initial
         count = math.ceil(abs(delta) / max_step)
@@ -163,7 +171,8 @@ def move_to_parking_pose():
             return
         print(
             f"Move one servo at a time in {steps} small steps, at most "
-            f"{PARKING_STEP_DEG:g} degree per step."
+            f"{PARKING_STEP_DEG:g} degree per step with "
+            f"{PARKING_STEP_DELAY_S:g}s between steps."
         )
         if input("Clear the workspace, then type MOVE to proceed: ").strip() != "MOVE":
             print("Move cancelled.")

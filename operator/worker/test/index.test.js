@@ -13,12 +13,7 @@ const request = (path, method = "GET", body) => new Request(`https://operator.ex
 test("API routes require an Access identity", async () => {
   const response = await worker.fetch(request("/api/me"), { DB: {} }, {});
   assert.equal(response.status, 401);
-  assert.equal(await response.text(), "Cloudflare Access authentication required");
-});
-
-test("static UI is also denied without an Access identity", async () => {
-  const response = await worker.fetch(request("/"), { ASSETS: {} }, {});
-  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { error: "Access identity is unavailable for this request" });
 });
 
 test("identity endpoint exposes only the authenticated operator", async () => {
@@ -35,7 +30,7 @@ test("static paths are delegated to Workers Static Assets", async () => {
   let called = false;
   const response = await worker.fetch(request("/"), {
     ASSETS: { fetch: async () => { called = true; return new Response("operator shell"); } },
-  }, { access: { getIdentity: async () => ({ email: "davide@example.com" }) } });
+  }, {});
   assert.equal(await response.text(), "operator shell");
   assert.equal(called, true);
 });

@@ -11,14 +11,20 @@ from cf_robot.protocol import JOINTS
 class ParkingTests(unittest.TestCase):
     def test_parking_moves_one_joint_at_a_time_in_small_steps(self):
         start = {joint: 0.0 for joint in JOINTS}
-        target = {joint: 0.0 for joint in JOINTS}
-        target["shoulder_pan.pos"] = 2.5
-        target["wrist_flex.pos"] = -1.5
+        target = {
+            "shoulder_pan.pos": 0.4,
+            "shoulder_lift.pos": -0.3,
+            "elbow_flex.pos": 0.2,
+            "wrist_flex.pos": -0.3,
+            "wrist_roll.pos": 0.2,
+            "gripper.pos": 1.0,
+        }
 
-        steps = list(parking_steps(start, target, max_step=1.0))
+        steps = list(parking_steps(start, target))
 
         self.assertEqual(steps[-1][1], target)
         previous = start
+        changed_order = []
         for changed_joint, pose in steps:
             changed = [
                 joint
@@ -26,8 +32,23 @@ class ParkingTests(unittest.TestCase):
                 if abs(pose[joint] - previous[joint]) > 1e-9
             ]
             self.assertEqual(changed, [changed_joint])
-            self.assertLessEqual(abs(pose[changed_joint] - previous[changed_joint]), 1.0)
+            self.assertLessEqual(
+                abs(pose[changed_joint] - previous[changed_joint]), 0.1 + 1e-9
+            )
+            if not changed_order or changed_order[-1] != changed_joint:
+                changed_order.append(changed_joint)
             previous = pose
+        self.assertEqual(
+            changed_order,
+            [
+                "shoulder_pan.pos",
+                "shoulder_lift.pos",
+                "elbow_flex.pos",
+                "gripper.pos",
+                "wrist_roll.pos",
+                "wrist_flex.pos",
+            ],
+        )
 
     def test_no_motion_still_yields_target(self):
         pose = {joint: 0.0 for joint in JOINTS}

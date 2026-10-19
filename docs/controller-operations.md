@@ -13,7 +13,8 @@ separate browser Operator UI.
 - In each Terminal session, load those settings with
   `source "$HOME/.config/cf-robot/controller.env"`.
 - Use a clear workspace and physical emergency stop. Before teleoperation,
-  align the leader and follower within 5 degrees on all six joints.
+  inspect the measured follower pose and keep the leader still until the CLI
+  startup sync completes, if it is needed.
 
 The follower USB path is stored on the Pi in `/etc/cf-robot/follower.env`.
 Mac-side WSS commands use that Pi setting and do not ask for the follower's
@@ -101,9 +102,18 @@ leader calibration:
 ```
 
 The `--fps` value is the maximum leader sample rate (default 30, valid 1-60).
-The Pi refuses a target that differs by more than 5 degrees per joint from
-the preceding accepted target. If that happens, inspect the joint-by-joint
-diagnostic, stop, and realign; do not repeatedly retry without checking.
+By default, if the leader and follower differ by more than 1 unit on any joint
+at startup, the CLI displays both poses and asks you to type `SYNC`. If
+confirmed, it gradually moves the follower to the leader's initial pose,
+one servo at a time, using at most 0.1 unit per step with 0.1 seconds between
+steps. Keep the workspace clear and do not move the leader until sync
+completes; the CLI waits for measured follower readback to come within 1 unit.
+
+This does **not** disable the Pi's 5-unit per-target guard. Every sync step
+stays below that guard, which remains active during teleoperation. Use
+`--no-startup-sync` only when the arms have already been aligned manually.
+After sync, if the Pi rejects a target, inspect the joint-by-joint diagnostic,
+stop, and realign; do not repeatedly retry without checking.
 
 ## Update the Pi over WSS
 

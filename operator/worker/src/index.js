@@ -21,6 +21,10 @@ function requestJson(request) {
 }
 
 async function handleApi(request, env, identity, url) {
+  if (!identity?.email) {
+    return json({ error: "Access identity is unavailable for this request" }, 401);
+  }
+
   if (request.method === "GET" && url.pathname === "/api/me") {
     return json({ email: identity.email, name: identity.name ?? identity.email });
   }
@@ -104,15 +108,9 @@ async function handleApi(request, env, identity, url) {
 export default {
   async fetch(request, env, context) {
     const url = new URL(request.url);
-    const identity = await identityFrom(context);
-    if (!identity?.email) {
-      return new Response("Cloudflare Access authentication required", {
-        status: 401,
-        headers: { "Cache-Control": "no-store" },
-      });
-    }
     if (url.pathname.startsWith("/api/")) {
       try {
+        const identity = await identityFrom(context);
         return await handleApi(request, env, identity, url);
       } catch (error) {
         console.error(JSON.stringify({
