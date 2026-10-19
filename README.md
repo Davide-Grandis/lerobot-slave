@@ -416,8 +416,8 @@ Create a folder for the project and clone this repo:
 
 ```sh
 mkdir -p "$HOME/Developer"
-git clone https://github.com/Davide-Grandis/lerobot-slave.git "$HOME/Developer/lerobot-slave"
-cd "$HOME/Developer/lerobot-slave"
+git clone https://github.com/Davide-Grandis/lerobot-slave.git "$HOME/Developer/lerobot-arms"
+cd "$HOME/Developer/lerobot-arms"
 ```
 
 Find the leader's serial device on the Mac with the arm connected:
