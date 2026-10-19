@@ -18,6 +18,7 @@ STARTUP_SYNC_TOLERANCE = 1.0
 # Half the follower's per-target guard, at a faster ramp than parking motion.
 STARTUP_SYNC_STEP_UNITS = 2.5
 STARTUP_SYNC_STEP_DELAY_S = 0.1
+STARTUP_SYNC_KEEPALIVE_S = 0.2
 STARTUP_SYNC_SETTLE_TIMEOUT_S = 30.0
 
 
@@ -123,7 +124,7 @@ async def run_teleop(
                         raise RuntimeError("startup sync cancelled; no targets were sent")
 
                     active_joint = None
-                    final_target_sent_at = None
+                    last_target_sent_at = None
                     for joint, target in sync_steps:
                         if reader.done():
                             reader.result()
@@ -139,10 +140,11 @@ async def run_teleop(
                                 separators=(",", ":"),
                             )
                         )
-                        final_target_sent_at = time.time()
+                        last_target_sent_at = time.time()
                         await asyncio.sleep(STARTUP_SYNC_STEP_DELAY_S)
 
                     deadline = time.monotonic() + STARTUP_SYNC_SETTLE_TIMEOUT_S
+                    last_action_sent_at = time.monotonic()
                     while time.monotonic() < deadline:
                         if reader.done():
                             reader.result()
@@ -151,8 +153,8 @@ async def run_teleop(
                         if (
                             measured is not None
                             and observed_at is not None
-                            and final_target_sent_at is not None
-                            and observed_at >= final_target_sent_at
+                            and last_target_sent_at is not None
+                            and observed_at >= last_target_sent_at
                             and all(
                                 abs(measured[joint] - initial_leader_pose[joint])
                                 <= STARTUP_SYNC_TOLERANCE
@@ -160,7 +162,17 @@ async def run_teleop(
                             )
                         ):
                             break
-                        await asyncio.sleep(0.1)
+                        if time.monotonic() - last_action_sent_at >= STARTUP_SYNC_KEEPALIVE_S:
+                            seq += 1
+                            await socket.send(
+                                json.dumps(
+                                    action_message(seq, initial_leader_pose),
+                                    separators=(",", ":"),
+                                )
+                            )
+                            last_target_sent_at = time.time()
+                            last_action_sent_at = time.monotonic()
+                        await asyncio.sleep(0.05)
                     else:
                         raise RuntimeError(
                             "follower did not reach the startup leader pose within "

@@ -23,7 +23,12 @@ class LeaderSyncTests(unittest.IsolatedAsyncioTestCase):
         leader_pose = {joint: 0.0 for joint in JOINTS}
         leader_pose["shoulder_lift.pos"] = -7.2
         accepted = []
-        server_pose = dict(follower_pose)
+        follower_state = {
+            "measured": dict(follower_pose),
+            "target": dict(follower_pose),
+            "last_target_change": time.monotonic(),
+            "last_command": time.monotonic(),
+        }
 
         class FakeLeader:
             is_connected = False
@@ -46,10 +51,19 @@ class LeaderSyncTests(unittest.IsolatedAsyncioTestCase):
 
             async def send_status():
                 while True:
+                    now = time.monotonic()
+                    if now - follower_state["last_command"] > 0.5:
+                        await socket.send(json.dumps({
+                            "type": "error",
+                            "message": "control stream timed out",
+                        }))
+                        return
+                    if now - follower_state["last_target_change"] > 0.75:
+                        follower_state["measured"] = dict(follower_state["target"])
                     await socket.send(json.dumps({
                         "type": "status",
                         "state": "ready",
-                        "observation": dict(server_pose),
+                        "observation": dict(follower_state["measured"]),
                         "observed_at": time.time(),
                     }))
                     await asyncio.sleep(0.05)
@@ -61,7 +75,10 @@ class LeaderSyncTests(unittest.IsolatedAsyncioTestCase):
                     seq, action = validate_command(json.loads(raw), last_seq)
                     last_seq = seq
                     accepted.append(action)
-                    server_pose.update(action)
+                    if action != follower_state["target"]:
+                        follower_state["target"] = dict(action)
+                        follower_state["last_target_change"] = time.monotonic()
+                    follower_state["last_command"] = time.monotonic()
             finally:
                 status_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, ConnectionClosed):
@@ -89,7 +106,7 @@ class LeaderSyncTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertTrue(accepted)
-        self.assertEqual(len(accepted), 3)
+        self.assertGreater(len(accepted), 3)
         self.assertLess(STARTUP_SYNC_STEP_UNITS, 5.0)
         self.assertEqual(accepted[-1], leader_pose)
         previous = follower_pose
