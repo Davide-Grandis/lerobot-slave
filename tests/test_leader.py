@@ -91,7 +91,7 @@ class LeaderSyncTests(unittest.IsolatedAsyncioTestCase):
                 stop.set()
 
         with patch("cf_robot.leader.access_headers", return_value={}), patch(
-            "builtins.input", return_value="SYNC"
+            "builtins.input", return_value=""
         ):
             async with serve(follower_socket, "127.0.0.1", 0) as server:
                 port = server.sockets[0].getsockname()[1]

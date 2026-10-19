@@ -103,12 +103,12 @@ leader calibration:
 
 The `--fps` value is the maximum leader sample rate (default 30, valid 1-60).
 By default, if the leader and follower differ by more than 1 unit on any joint
-at startup, the CLI displays both poses and asks you to type `SYNC`. If
-confirmed, it gradually moves the follower to the leader's initial pose,
-one servo at a time, using at most 2.5 units per step with 0.1 seconds between
-steps (a commanded ramp of about 25 units per second). The wrist joints move
-last. Keep the workspace clear and do not move the leader until sync completes;
-the CLI waits for measured follower readback to come within 1 unit.
+at startup, the CLI displays both poses and waits for you to press Enter. It
+then gradually moves the follower to the leader's initial pose, one servo at
+a time, using at most 2.5 units per step with 0.1 seconds between steps (a
+commanded ramp of about 25 units per second). The wrist joints move last.
+Keep the workspace clear and do not move the leader until sync completes; the
+CLI waits for measured follower readback to come within 1 unit.
 
 This does **not** disable the Pi's 5-unit per-target guard. Every sync step
 stays below that guard, which remains active during teleoperation. Actual

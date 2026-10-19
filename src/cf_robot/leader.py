@@ -116,12 +116,10 @@ async def run_teleop(
                         f"{STARTUP_SYNC_STEP_UNITS:g}-unit steps, taking at least "
                         f"{duration:.1f} seconds."
                     )
-                    confirmation = await asyncio.to_thread(
+                    await asyncio.to_thread(
                         input,
-                        "Clear the workspace, hold the leader still, then type SYNC to proceed: ",
+                        "Clear the workspace, hold the leader still, then press Enter to proceed (Ctrl-C cancels): ",
                     )
-                    if confirmation.strip() != "SYNC":
-                        raise RuntimeError("startup sync cancelled; no targets were sent")
 
                     active_joint = None
                     last_target_sent_at = None
