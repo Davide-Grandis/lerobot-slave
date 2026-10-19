@@ -73,13 +73,13 @@ async def run_teleop(
                     "check the USB port and close any other process using the leader"
                 )
             on_status({"type": "status", "state": "leader connected"})
-            latest_feedback = {"observation": None, "observed_at": None}
+            latest_feedback = {"observation": None, "received_at": None}
 
             def handle_status(message):
                 if message.get("type") == "status" and message.get("observation"):
                     try:
                         latest_feedback["observation"] = validate_action(message["observation"])
-                        latest_feedback["observed_at"] = float(message["observed_at"])
+                        latest_feedback["received_at"] = time.monotonic()
                     except (KeyError, TypeError, ValueError):
                         pass
                 on_status(message)
@@ -140,21 +140,22 @@ async def run_teleop(
                                 separators=(",", ":"),
                             )
                         )
-                        last_target_sent_at = time.time()
+                        last_target_sent_at = time.monotonic()
                         await asyncio.sleep(STARTUP_SYNC_STEP_DELAY_S)
 
                     deadline = time.monotonic() + STARTUP_SYNC_SETTLE_TIMEOUT_S
                     last_action_sent_at = time.monotonic()
+                    last_progress_at = last_action_sent_at
                     while time.monotonic() < deadline:
                         if reader.done():
                             reader.result()
                         measured = latest_feedback["observation"]
-                        observed_at = latest_feedback["observed_at"]
+                        feedback_received_at = latest_feedback["received_at"]
                         if (
                             measured is not None
-                            and observed_at is not None
+                            and feedback_received_at is not None
                             and last_target_sent_at is not None
-                            and observed_at >= last_target_sent_at
+                            and feedback_received_at >= last_target_sent_at
                             and all(
                                 abs(measured[joint] - initial_leader_pose[joint])
                                 <= STARTUP_SYNC_TOLERANCE
@@ -162,6 +163,22 @@ async def run_teleop(
                             )
                         ):
                             break
+                        now = time.monotonic()
+                        if now - last_progress_at >= 2.0:
+                            if measured is None:
+                                print("Waiting for measured follower readback...")
+                            else:
+                                remaining = [
+                                    f"{joint}: follower={measured[joint]:.2f}, "
+                                    f"leader={initial_leader_pose[joint]:.2f}, "
+                                    f"delta={initial_leader_pose[joint] - measured[joint]:+.2f}"
+                                    for joint in JOINTS
+                                    if abs(measured[joint] - initial_leader_pose[joint])
+                                    > STARTUP_SYNC_TOLERANCE
+                                ]
+                                if remaining:
+                                    print("Follower still settling: " + "; ".join(remaining))
+                            last_progress_at = now
                         if time.monotonic() - last_action_sent_at >= STARTUP_SYNC_KEEPALIVE_S:
                             seq += 1
                             await socket.send(
@@ -170,13 +187,31 @@ async def run_teleop(
                                     separators=(",", ":"),
                                 )
                             )
-                            last_target_sent_at = time.time()
+                            last_target_sent_at = time.monotonic()
                             last_action_sent_at = time.monotonic()
                         await asyncio.sleep(0.05)
                     else:
+                        measured = latest_feedback["observation"]
+                        if measured is None:
+                            residual = "no measured follower feedback received"
+                        else:
+                            offsets = [
+                                f"{joint}: follower={measured[joint]:.2f}, "
+                                f"leader={initial_leader_pose[joint]:.2f}, "
+                                f"delta={initial_leader_pose[joint] - measured[joint]:+.2f}"
+                                for joint in JOINTS
+                                if abs(measured[joint] - initial_leader_pose[joint])
+                                > STARTUP_SYNC_TOLERANCE
+                            ]
+                            residual = (
+                                "; ".join(offsets)
+                                if offsets
+                                else "readback was not refreshed after the final target"
+                            )
                         raise RuntimeError(
                             "follower did not reach the startup leader pose within "
-                            f"{STARTUP_SYNC_SETTLE_TIMEOUT_S:g} seconds; inspect both arms"
+                            f"{STARTUP_SYNC_SETTLE_TIMEOUT_S:g} seconds; "
+                            f"final readback: {residual}; inspect both arms"
                         )
                 on_status({"type": "status", "state": "startup sync complete"})
 
