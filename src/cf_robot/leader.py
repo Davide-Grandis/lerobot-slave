@@ -81,7 +81,7 @@ def main():
     except KeyboardInterrupt:
         print("Stopped")
     except (OSError, ValueError, RuntimeError, ConnectionError, TimeoutError, WebSocketException) as exc:
-        parser.exit(1, f"Teleoperation stopped: {exc}\n")
+        parser.exit(1, f"Teleoperation stopped:\n{exc}\n")
 
 
 if __name__ == "__main__":

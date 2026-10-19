@@ -88,14 +88,15 @@ class FollowerSession:
                         if not armed
                         else "reduce per-sample movement and retry"
                     )
-                    details = ", ".join(
-                        f"{name}: {baseline_label}={previous[name]:.2f}, "
+                    details = "\n".join(
+                        f"  - {name}: {baseline_label}={previous[name]:.2f}, "
                         f"leader={target[name]:.2f}, delta={delta:+.2f}"
                         for name, delta in jumps.items()
                     )
                     raise ProtocolError(
-                        f"joint jump exceeds {self.max_step:g}-degree limit "
-                        f"({details}); {next_step}"
+                        f"joint jump exceeds {self.max_step:g}-degree limit:\n"
+                        f"{details}\n"
+                        f"{next_step}"
                     )
                 robot.send_action(target)
                 previous = target

@@ -23,6 +23,7 @@ this repository does not provision Cloudflare resources.
     - [Install dependencies](#install-dependencies)
     - [Calibrate the follower arm](#calibrate-the-follower-arm)
     - [Configure and start the follower service](#configure-and-start-the-follower-service)
+    - [Record and use the follower parking pose](#record-and-use-the-follower-parking-pose)
     - [Normal startup and restart](#normal-startup-and-restart)
     - [Upgrade the Pi from GitHub](#upgrade-the-pi-from-github)
   - [Cloudflare dashboard setup](#cloudflare-dashboard-setup)
@@ -278,6 +279,51 @@ If the GitHub repository is private, configure read-only SSH deploy-key
 access for the account performing the clone and use its SSH URL instead.
 Never put a personal access token in a clone URL, shell history, or service
 unit.
+
+#### Record and use the follower parking pose
+
+These helpers record the follower's current joint positions as a parking pose
+and later move the follower back to it. They do not move the leader. The saved
+pose is `/var/lib/cf-robot/parking/so101_follower.json`.
+
+Use an unloaded arm, clear workspace, and physical emergency stop. The parking
+move follows a straight interpolation in joint space; it does not detect
+obstacles or guarantee a collision-free path. The helper disconnects when
+finished, so do not rely on the servos to hold a load or keep the arm parked.
+
+To record a pose, manually place the follower in a safe parking position.
+Stop the follower service, then run the recorder from your normal SSH account:
+
+```sh
+sudo systemctl stop cf-robot-follower
+/opt/cf-robot/scripts/parking_record
+```
+
+Enter the follower's full serial path. Check the displayed joint positions,
+then type `RECORD` to save them. The helper will refuse to run while the
+follower service is active. Restart the service after recording:
+
+```sh
+sudo systemctl start cf-robot-follower
+```
+
+To move the follower to the saved pose later, first stop the service again
+and run the setter:
+
+```sh
+sudo systemctl stop cf-robot-follower
+/opt/cf-robot/scripts/parking_set
+```
+
+Enter the same serial path. Review the current and saved positions, clear the
+workspace, then type `MOVE` to confirm. The script moves in steps of at most
+1 degree per joint with a short pause between steps. After it finishes, place
+the leader manually at the same pose before starting teleoperation, then
+restart the follower service:
+
+```sh
+sudo systemctl start cf-robot-follower
+```
 
 #### Normal startup and restart
 
@@ -614,7 +660,7 @@ delay software shutdown.
 | WebSocket upgrade fails but health works | Tunnel origin must be HTTP on `127.0.0.1:8765`; check Access protection, the matching origin key, and WebSocket support at the zone. |
 | TLS certificate verification fails on macOS with WARP connected | Switch the WARP profile to DNS-only mode and retry; the WARP traffic proxy can interfere with TLS verification. |
 | `stale command or unsynchronized clocks` | NTP on both hosts and actual network delay/jitter; do not loosen freshness checks casually. |
-| `joint jump exceeds limit` | The error names each offending joint and reports the prior reference (initial follower reading or previous leader target), current leader command, and difference in degrees. Align before starting; during motion, reduce per-sample movement and retry. |
+| `joint jump exceeds limit` | The error lists each offending joint on an indented line with its prior reference (initial follower reading or previous leader target), current leader command, and difference in degrees. Align before starting; during motion, reduce per-sample movement and retry. |
 | Web control stops when tab is hidden or closed | The page must continue sending heartbeats. Reopen it, inspect the follower, re-align, and restart. |
 
 ## Tests and limitations

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec sudo -u robot env HF_HOME=/var/lib/cf-robot \
+  /opt/cf-robot/venv/bin/python -m cf_robot.parking set

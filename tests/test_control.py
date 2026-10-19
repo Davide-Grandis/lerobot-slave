@@ -63,10 +63,12 @@ class ControlTests(unittest.TestCase):
     def test_initial_jump_is_rejected(self):
         action = {joint: 0.0 for joint in JOINTS}
         action["wrist_roll.pos"] = 20.0
+        action["elbow_flex.pos"] = -6.0
         self.session.submit(action)
         self.assertTrue(wait_for(lambda: self.session.state == "error"))
         self.assertEqual(self.robot.actions, [])
-        self.assertIn("wrist_roll.pos", self.session.error)
+        self.assertIn("\n  - elbow_flex.pos:", self.session.error)
+        self.assertIn("\n  - wrist_roll.pos:", self.session.error)
         self.assertIn("follower=0.00", self.session.error)
         self.assertIn("leader=20.00", self.session.error)
         self.assertIn("delta=+20.00", self.session.error)
