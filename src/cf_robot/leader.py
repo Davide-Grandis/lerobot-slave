@@ -11,14 +11,13 @@ from websockets.exceptions import WebSocketException
 
 from cf_robot.auth import access_headers
 from cf_robot.hardware import joint_positions, make_leader
-from cf_robot.parking import (
-    PARKING_STEP_DELAY_S,
-    PARKING_STEP_DEG,
-    parking_steps,
-)
+from cf_robot.parking import parking_steps
 from cf_robot.protocol import JOINTS, VERSION, action_message, validate_action
 
 STARTUP_SYNC_TOLERANCE = 1.0
+# Half the follower's per-target guard, at a faster ramp than parking motion.
+STARTUP_SYNC_STEP_UNITS = 2.5
+STARTUP_SYNC_STEP_DELAY_S = 0.1
 STARTUP_SYNC_SETTLE_TIMEOUT_S = 30.0
 
 
@@ -96,8 +95,14 @@ async def run_teleop(
                     for joint in JOINTS
                 )
                 if initial_gap > STARTUP_SYNC_TOLERANCE:
-                    sync_steps = list(parking_steps(follower_pose, initial_leader_pose))
-                    duration = len(sync_steps) * PARKING_STEP_DELAY_S
+                    sync_steps = list(
+                        parking_steps(
+                            follower_pose,
+                            initial_leader_pose,
+                            max_step=STARTUP_SYNC_STEP_UNITS,
+                        )
+                    )
+                    duration = len(sync_steps) * STARTUP_SYNC_STEP_DELAY_S
                     print("Measured follower and leader startup poses (servo units):")
                     for joint in JOINTS:
                         print(
@@ -107,7 +112,7 @@ async def run_teleop(
                         )
                     print(
                         f"Startup sync will move one servo at a time in at most "
-                        f"{PARKING_STEP_DEG:g}-unit steps, taking at least "
+                        f"{STARTUP_SYNC_STEP_UNITS:g}-unit steps, taking at least "
                         f"{duration:.1f} seconds."
                     )
                     confirmation = await asyncio.to_thread(
@@ -135,7 +140,7 @@ async def run_teleop(
                             )
                         )
                         final_target_sent_at = time.time()
-                        await asyncio.sleep(PARKING_STEP_DELAY_S)
+                        await asyncio.sleep(STARTUP_SYNC_STEP_DELAY_S)
 
                     deadline = time.monotonic() + STARTUP_SYNC_SETTLE_TIMEOUT_S
                     while time.monotonic() < deadline:

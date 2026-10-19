@@ -642,7 +642,8 @@ Then run from the repository root:
 ```
 
 Press Ctrl-C to stop. The CLI does not silently reconnect after a dropped
-session: inspect the follower, realign both arms, then start again.
+session: inspect both arms, then start a new session. Startup sync will offer
+to move the follower to the leader's initial pose if needed.
 
 #### Remote follower parking commands (WSS)
 
@@ -761,19 +762,24 @@ after approximately three seconds; stale video also stops control.
    protected health request verifies the service/Tunnel path, not that the
    USB arm or camera is ready. Pi login and `systemctl` commands are only
    needed for initial setup or troubleshooting, not each startup.
-3. For leader streaming, align the leader and follower within 5 units on all
-   joints. For manual mode, start from the measured follower pose. Keep the
-   follower clear, verify the live camera, then start **one** control session.
-   The Pi connects to the follower on demand; connecting alone does not send
-   a motion target.
+3. Keep the follower's workspace clear and verify the live camera, then start
+   **one** control session. In the Mac leader CLI, startup sync is enabled by
+   default: if the initial poses differ by more than 1 unit on any joint, it
+   shows the measured poses and waits for `SYNC` before slowly moving the
+   follower to the leader. Hold the leader still and watch the follower until
+   sync completes. Without sync (`--no-startup-sync`), align within 5 units on
+   every joint before streaming. Manual mode starts from the measured follower
+   pose. The Pi connects to the follower on demand; connecting alone sends no
+   motion target.
 4. Move the leader slowly or jog one follower joint at a time while watching
    both the measured pose and camera. If the session reports an error, stalls,
    or the follower behaves unexpectedly, use the physical stop first. In
    normal operation press Stop or Ctrl-C; verify the follower is stationary
    before leaving.
 5. After a timeout, disconnect, Pi reboot, or rejected joint jump, inspect
-   both arms, re-align, and start a **new** session. The code does not
-   automatically reconnect or replay previous commands.
+   both arms and start a **new** session. The CLI can synchronize the initial
+   follower pose after confirmation; it does not automatically reconnect or
+   replay previous commands.
 
 When the control WebSocket closes, the follower session disconnects. After
 the first command, a 500 ms gap also ends it; the Pi does not continue
@@ -794,7 +800,7 @@ delay software shutdown.
 | WebSocket upgrade fails but health works | Tunnel origin must be HTTP on `127.0.0.1:8765`; check Access protection, the matching origin key, and WebSocket support at the zone. |
 | TLS certificate verification fails on macOS with WARP connected | Switch the WARP profile to DNS-only mode and retry; the WARP traffic proxy can interfere with TLS verification. |
 | `stale command or unsynchronized clocks` | NTP on both hosts and actual network delay/jitter; do not loosen freshness checks casually. |
-| `joint jump exceeds limit` | The error lists each offending joint on an indented line with its prior reference (initial follower reading or previous leader target), current leader command, and difference in degrees. Align before starting; during motion, reduce per-sample movement and retry. |
+| `joint jump exceeds limit` | The error lists each offending joint, its prior reference, current leader command, and difference in servo units. The CLI offers a confirmed startup sync for initial mismatch; during motion, reduce per-sample movement and retry. |
 | Web control stops when tab is hidden or closed | The page must continue sending heartbeats and receiving camera frames. Reopen it, inspect the follower, re-align if using the leader, and restart. |
 
 ## Tests and limitations

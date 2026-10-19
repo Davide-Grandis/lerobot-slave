@@ -44,6 +44,7 @@ const elements = {
   stop: $("stop-control"),
   estop: $("software-stop"),
   leaderConnect: $("leader-connect"),
+  leaderDisconnect: $("leader-disconnect"),
   manualMode: $("manual-mode"),
   leaderMode: $("leader-mode"),
   modeChip: $("mode-chip"),
@@ -224,6 +225,7 @@ function updateButtons(status) {
   elements.estop.disabled = status.running ? stopped : !stopped;
   elements.estop.textContent = stopped ? "↻  RE-ARM / INSPECT" : "■   SOFTWARE STOP";
   elements.leaderConnect.disabled = !connected || status.leader_connected || state.manualBusy;
+  elements.leaderDisconnect.disabled = !connected || !status.leader_connected || state.manualBusy;
   elements.manualMode.disabled = !connected || state.mode === "manual";
   elements.leaderMode.disabled = !connected || state.mode === "leader";
   elements.jogStep.disabled = !connected || state.mode !== "manual" || state.manualBusy;
@@ -268,8 +270,6 @@ function updateButtons(status) {
     elements.start.innerHTML = 'Connect follower <span>↗</span>';
   }
   if (status.error) elements.pairingStatus.textContent = status.error;
-  elements.leaderConnect.textContent = status.leader_connected ? "Disconnect leader" : "Connect leader";
-  elements.leaderConnect.disabled = !connected || state.manualBusy;
   renderMeasurements(status);
 }
 
@@ -469,16 +469,24 @@ async function changeMode(mode) {
 
 async function connectLeader() {
   try {
-    if (state.agent?.leader_connected) {
-      await agentRequest("/api/leader/disconnect", { method: "POST" });
-      if (state.mode === "leader") state.mode = "manual";
-      announce("Leader disconnected. Follower remains in manual mode.", "success");
-    } else {
-      elements.leaderConnect.disabled = true;
-      elements.leaderConnect.textContent = "Connecting…";
-      await agentRequest("/api/leader/connect", { method: "POST" });
-      announce("Leader connected. Align both arms before selecting leader mode.", "success");
-    }
+    elements.leaderConnect.disabled = true;
+    elements.leaderConnect.textContent = "Connecting…";
+    await agentRequest("/api/leader/connect", { method: "POST" });
+    announce("Leader connected. Align both arms before selecting leader mode.", "success");
+    await pollStatus();
+  } catch (error) {
+    announce(error.message, "error");
+  } finally {
+    await pollStatus();
+  }
+}
+
+async function disconnectLeader() {
+  try {
+    elements.leaderDisconnect.disabled = true;
+    await agentRequest("/api/leader/disconnect", { method: "POST" });
+    state.mode = "manual";
+    announce("Leader disconnected; its USB port is released.", "success");
     await pollStatus();
   } catch (error) {
     announce(error.message, "error");
@@ -553,6 +561,7 @@ elements.stop.addEventListener("click", stopControl);
 elements.manualMode.addEventListener("click", () => changeMode("manual"));
 elements.leaderMode.addEventListener("click", () => changeMode("leader"));
 elements.leaderConnect.addEventListener("click", connectLeader);
+elements.leaderDisconnect.addEventListener("click", disconnectLeader);
 $("rearm-button").addEventListener("click", rearm);
 elements.rearmConfirmation.addEventListener("input", () => elements.rearmConfirmation.setCustomValidity(""));
 elements.estop.addEventListener("click", () => {

@@ -26,7 +26,7 @@
           <div class="eyebrow"><span>01 / REMOTE TELEOP</span><span>LEADER → FOLLOWER</span></div>
           <div class="intro-row">
             <div>
-              <h1>Distance,<br><em>in motion.</em></h1>
+              <h1>Distance, <em>in motion.</em></h1>
               <p class="intro-copy">A live instrument panel for the SO-ARM101. Check the real arm, confirm its measured pose, then choose how to move.</p>
             </div>
             <div class="device-tag"><span class="device-tag-label">ROBOT / 01</span><strong id="robot-name">SO-ARM101</strong><span>CONTROLLER STATION</span></div>
@@ -106,7 +106,10 @@
             </div>
             <div class="leader-connect-row">
               <div><span class="section-kicker">USB / LOCAL</span><strong>Leader arm</strong></div>
-              <button class="small-button" id="leader-connect" type="button" disabled>Connect leader</button>
+              <div class="leader-actions">
+                <button class="small-button" id="leader-connect" type="button" disabled>Connect leader</button>
+                <button class="small-button leader-disconnect" id="leader-disconnect" type="button" disabled>Disconnect leader</button>
+              </div>
             </div>
             <div class="jog-toolbar"><span>JOINT / ON-SCREEN CONTROL</span><label for="jog-step">STEP <select id="jog-step" disabled><option value="0.5">0.5</option><option value="1" selected>1</option><option value="2.5">2.5</option><option value="5">5</option></select></label></div>
             <div class="jog-list" id="jog-list"></div>
