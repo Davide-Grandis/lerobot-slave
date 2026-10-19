@@ -25,6 +25,7 @@ class FollowerSession:
         self.lock = threading.Lock()
         self.state = "connecting"
         self.error = None
+        self.initial_observation = None
         self.target = None
         self.received_at = 0.0
         self.thread = threading.Thread(target=self._run, name="follower-control", daemon=True)
@@ -58,6 +59,7 @@ class FollowerSession:
             # Calibration is performed explicitly before running the service.
             robot.connect(calibrate=False)
             previous = validate_action(joint_positions(robot.get_observation()))
+            self.initial_observation = dict(previous)
             with self.lock:
                 self.state = "ready"
             self.ready.set()

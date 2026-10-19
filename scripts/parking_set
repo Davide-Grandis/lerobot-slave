@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-exec sudo -u robot env HF_HOME=/var/lib/cf-robot \
+FOLLOWER_PORT="$(sudo awk -F= '$1 == "FOLLOWER_PORT" {sub(/^[^=]*=/, ""); print; exit}' \
+  /etc/cf-robot/follower.env)"
+if [[ -z "$FOLLOWER_PORT" ]]; then
+  echo "FOLLOWER_PORT is missing from /etc/cf-robot/follower.env" >&2
+  exit 1
+fi
+
+exec sudo -u robot env HF_HOME=/var/lib/cf-robot FOLLOWER_PORT="$FOLLOWER_PORT" \
   /opt/cf-robot/venv/bin/python -m cf_robot.parking set

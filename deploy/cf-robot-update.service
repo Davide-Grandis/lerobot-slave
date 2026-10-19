@@ -1,0 +1,14 @@
+[Unit]
+Description=Fast-forward and update the cf-robot follower
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/cf-robot-update
+TimeoutStartSec=900
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/etc/systemd/system /opt/cf-robot /usr/local/sbin /var/lib/cf-robot /var/tmp

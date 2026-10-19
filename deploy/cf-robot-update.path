@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for an authenticated cf-robot update request
+
+[Path]
+PathExists=/var/lib/cf-robot/update-request
+Unit=cf-robot-update.service
+
+[Install]
+WantedBy=multi-user.target

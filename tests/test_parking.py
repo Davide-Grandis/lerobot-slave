@@ -1,28 +1,46 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-from cf_robot.parking import interpolated_targets
+from cf_robot.parking import parking_steps
+from cf_robot.parking_client import load_parking_pose, save_parking_pose
 from cf_robot.protocol import JOINTS
 
 
 class ParkingTests(unittest.TestCase):
-    def test_interpolation_limits_each_joint_step(self):
+    def test_parking_moves_one_joint_at_a_time_in_small_steps(self):
         start = {joint: 0.0 for joint in JOINTS}
         target = {joint: 0.0 for joint in JOINTS}
         target["shoulder_pan.pos"] = 2.5
         target["wrist_flex.pos"] = -1.5
 
-        poses = list(interpolated_targets(start, target, max_step=1.0))
+        steps = list(parking_steps(start, target, max_step=1.0))
 
-        self.assertEqual(poses[-1], target)
+        self.assertEqual(steps[-1][1], target)
         previous = start
-        for pose in poses:
-            for joint in JOINTS:
-                self.assertLessEqual(abs(pose[joint] - previous[joint]), 1.0)
+        for changed_joint, pose in steps:
+            changed = [
+                joint
+                for joint in JOINTS
+                if abs(pose[joint] - previous[joint]) > 1e-9
+            ]
+            self.assertEqual(changed, [changed_joint])
+            self.assertLessEqual(abs(pose[changed_joint] - previous[changed_joint]), 1.0)
             previous = pose
 
     def test_no_motion_still_yields_target(self):
         pose = {joint: 0.0 for joint in JOINTS}
-        self.assertEqual(list(interpolated_targets(pose, pose)), [pose])
+        self.assertEqual(list(parking_steps(pose, pose)), [])
+
+    def test_remote_parking_pose_is_saved_with_private_file_permissions(self):
+        pose = {joint: 1.25 for joint in JOINTS}
+        with TemporaryDirectory() as tmp:
+            parking_file = Path(tmp) / "cf-robot" / "follower-parking.json"
+            with patch("cf_robot.parking_client.PARKING_FILE", parking_file):
+                save_parking_pose(pose)
+                self.assertEqual(load_parking_pose(), pose)
+            self.assertEqual(parking_file.stat().st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":

@@ -18,8 +18,8 @@ CALIBRATION_FILE = Path(
     "/var/lib/cf-robot/lerobot/calibration/robots/so_follower/so101_follower.json"
 )
 PARKING_FILE = Path("/var/lib/cf-robot/parking/so101_follower.json")
-PARKING_STEP_DEG = 1.0
-PARKING_STEP_DELAY_S = 0.1
+PARKING_STEP_DEG = 0.25
+PARKING_STEP_DELAY_S = 0.05
 
 
 def ensure_service_stopped():
@@ -46,8 +46,12 @@ def check_calibration():
         )
 
 
-def prompt_port():
-    port = input("Follower serial path (/dev/serial/by-id/...): ").strip()
+def configured_port():
+    port = os.environ.get("FOLLOWER_PORT", "").strip()
+    if not port:
+        raise RuntimeError(
+            "FOLLOWER_PORT is missing; load it from /etc/cf-robot/follower.env"
+        )
     try:
         mode = os.stat(port).st_mode
     except OSError as exc:
@@ -113,21 +117,21 @@ def load_parking_pose():
         raise RuntimeError(f"invalid parking pose in {PARKING_FILE}: {exc}") from exc
 
 
-def interpolated_targets(start, end, max_step=PARKING_STEP_DEG):
-    largest_delta = max(abs(end[name] - start[name]) for name in JOINTS)
-    steps = max(1, math.ceil(largest_delta / max_step))
-    for index in range(1, steps + 1):
-        fraction = index / steps
-        yield {
-            name: start[name] + (end[name] - start[name]) * fraction
-            for name in JOINTS
-        }
+def parking_steps(start, end, max_step=PARKING_STEP_DEG):
+    state = dict(start)
+    for joint in JOINTS:
+        initial = state[joint]
+        delta = end[joint] - initial
+        count = math.ceil(abs(delta) / max_step)
+        for index in range(1, count + 1):
+            state[joint] = initial + delta * index / count
+            yield joint, dict(state)
 
 
 def record_pose():
     ensure_service_stopped()
     check_calibration()
-    port = prompt_port()
+    port = configured_port()
     with connected_follower(port) as robot:
         pose = observe_pose(robot)
         print_pose("Current follower pose:", pose)
@@ -144,23 +148,32 @@ def move_to_parking_pose():
     ensure_service_stopped()
     check_calibration()
     target = load_parking_pose()
-    port = prompt_port()
+    port = configured_port()
 
     with connected_follower(port) as robot:
         start = observe_pose(robot)
         print_pose("Current follower pose:", start)
         print_pose("Recorded parking pose:", target)
-        largest_delta = max(abs(target[name] - start[name]) for name in JOINTS)
-        steps = max(1, math.ceil(largest_delta / PARKING_STEP_DEG))
+        steps = sum(
+            math.ceil(abs(target[name] - start[name]) / PARKING_STEP_DEG)
+            for name in JOINTS
+        )
+        if not steps:
+            print("Follower is already at the recorded parking pose.")
+            return
         print(
-            f"Move to the saved pose in {steps} small steps, at most "
-            f"{PARKING_STEP_DEG:g} degree per joint per step."
+            f"Move one servo at a time in {steps} small steps, at most "
+            f"{PARKING_STEP_DEG:g} degree per step."
         )
         if input("Clear the workspace, then type MOVE to proceed: ").strip() != "MOVE":
             print("Move cancelled.")
             return
 
-        for next_pose in interpolated_targets(start, target):
+        active_joint = None
+        for joint, next_pose in parking_steps(start, target):
+            if joint != active_joint:
+                print(f"Moving {joint}...")
+                active_joint = joint
             robot.send_action(next_pose)
             time.sleep(PARKING_STEP_DELAY_S)
 

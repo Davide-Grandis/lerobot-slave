@@ -7,7 +7,10 @@ import hmac
 import json
 import logging
 import os
+from pathlib import Path
+import subprocess
 import time
+import uuid
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import uvicorn
@@ -17,6 +20,17 @@ from cf_robot.hardware import make_camera, make_follower
 from cf_robot.protocol import VERSION, validate_command
 
 LOG = logging.getLogger(__name__)
+UPDATE_REQUEST = Path("/var/lib/cf-robot/update-request")
+UPDATE_STATUS = Path("/var/lib/cf-robot/update-status.json")
+
+
+def read_update_status():
+    try:
+        return json.loads(UPDATE_STATUS.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError):
+        return {"state": "unavailable"}
 
 
 def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fps=10,
@@ -26,17 +40,26 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     control_lock = asyncio.Lock()
     video_lock = asyncio.Lock()
+    update_requested = UPDATE_REQUEST.exists()
     follower_factory = factory or (lambda: make_follower(port, arm_id))
     camera_factory = camera_factory or (lambda: make_camera(camera_device, width, height, video_fps))
 
     @app.get("/health")
     async def health():
-        return {"service": "cf-robot-follower", "version": VERSION, "control_busy": control_lock.locked()}
+        return {
+            "service": "cf-robot-follower",
+            "version": VERSION,
+            "control_busy": control_lock.locked(),
+            "update": read_update_status(),
+        }
 
     @app.websocket("/control")
     async def control(ws: WebSocket):
         if not hmac.compare_digest(ws.headers.get("x-cf-robot-key", ""), origin_key):
             await ws.close(code=1008)
+            return
+        if update_requested:
+            await ws.close(code=1013, reason="follower update in progress")
             return
         await ws.accept()
         if control_lock.locked():
@@ -49,7 +72,13 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                 if not await asyncio.to_thread(session.wait_ready):
                     await ws.send_json({"type": "error", "message": session.error or "follower connection timed out"})
                     return
-                await ws.send_json({"type": "ready", "version": VERSION})
+                await ws.send_json(
+                    {
+                        "type": "ready",
+                        "version": VERSION,
+                        "observation": session.initial_observation,
+                    }
+                )
                 last_seq = 0
                 last_status = time.monotonic()
                 while True:
@@ -79,10 +108,86 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                 except (RuntimeError, OSError, WebSocketDisconnect):
                     pass
 
+    @app.websocket("/update")
+    async def update(ws: WebSocket):
+        nonlocal update_requested
+        if not hmac.compare_digest(ws.headers.get("x-cf-robot-key", ""), origin_key):
+            await ws.close(code=1008)
+            return
+        await ws.accept()
+
+        async def reject(message):
+            await ws.send_json({"type": "error", "message": message})
+            await ws.close(code=1008)
+
+        if update_requested or UPDATE_REQUEST.exists():
+            await reject("an update is already queued")
+            return
+        if control_lock.locked() or video_lock.locked():
+            await reject("stop control and video sessions before updating")
+            return
+        updater = await asyncio.to_thread(
+            subprocess.run,
+            ["systemctl", "is-active", "--quiet", "cf-robot-update.path"],
+            check=False,
+        )
+        if updater.returncode != 0:
+            await reject("remote updater is not installed or enabled; run one-time setup over SSH")
+            return
+
+        try:
+            raw = await asyncio.wait_for(ws.receive_text(), timeout=10)
+            message = json.loads(raw)
+        except asyncio.TimeoutError:
+            await reject("timed out waiting for an update request")
+            return
+        except json.JSONDecodeError:
+            await reject("invalid update request")
+            return
+        except WebSocketDisconnect:
+            return
+        if message != {"version": VERSION, "type": "update"}:
+            await reject("unsupported update request")
+            return
+
+        request_id = uuid.uuid4().hex
+        temporary = UPDATE_REQUEST.with_name(f"{UPDATE_REQUEST.name}.{request_id}.tmp")
+
+        def stage_request():
+            temporary.write_text(request_id, encoding="ascii")
+            temporary.chmod(0o600)
+
+        try:
+            await asyncio.to_thread(stage_request)
+            if (
+                update_requested
+                or UPDATE_REQUEST.exists()
+                or control_lock.locked()
+                or video_lock.locked()
+            ):
+                temporary.unlink(missing_ok=True)
+                await reject("follower became busy; retry when no session is active")
+                return
+            update_requested = True
+            await ws.send_json({"type": "update_queued", "request_id": request_id})
+            await asyncio.to_thread(os.replace, temporary, UPDATE_REQUEST)
+        except Exception:
+            update_requested = False
+            temporary.unlink(missing_ok=True)
+            raise
+        finally:
+            try:
+                await ws.close()
+            except (RuntimeError, OSError, WebSocketDisconnect):
+                pass
+
     @app.websocket("/video")
     async def video(ws: WebSocket):
         if not hmac.compare_digest(ws.headers.get("x-cf-robot-key", ""), origin_key):
             await ws.close(code=1008)
+            return
+        if update_requested:
+            await ws.close(code=1013, reason="follower update in progress")
             return
         await ws.accept()
         if camera_device is None:

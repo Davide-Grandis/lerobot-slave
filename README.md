@@ -23,6 +23,7 @@ this repository does not provision Cloudflare resources.
     - [Install dependencies](#install-dependencies)
     - [Calibrate the follower arm](#calibrate-the-follower-arm)
     - [Configure and start the follower service](#configure-and-start-the-follower-service)
+    - [Enable WSS updates (one-time SSH setup)](#enable-wss-updates-one-time-ssh-setup)
     - [Record and use the follower parking pose](#record-and-use-the-follower-parking-pose)
     - [Normal startup and restart](#normal-startup-and-restart)
     - [Upgrade the Pi from GitHub](#upgrade-the-pi-from-github)
@@ -32,6 +33,8 @@ this repository does not provision Cloudflare resources.
   - [Leader side: controller laptop](#leader-side-controller-laptop)
     - [Set up and calibrate the leader](#set-up-and-calibrate-the-leader)
     - [CLI (phase 1)](#cli-phase-1)
+    - [Remote follower parking commands (WSS)](#remote-follower-parking-commands-wss)
+    - [Update the Pi over WSS](#update-the-pi-over-wss)
     - [Browser console (phase 2)](#browser-console-phase-2)
     - [Configuration reference](#configuration-reference)
 - [Operating runbook](#operating-runbook)
@@ -271,6 +274,32 @@ interpreter and dependencies are selected automatically. **No `activate`
 command, shell login, or Pi-side action is needed at boot or for normal
 teleoperation.**
 
+#### Enable WSS updates (one-time SSH setup)
+
+The follower service can accept a fixed update request at `/update` over the
+existing Cloudflare-protected WSS hostname. The request accepts no shell
+commands, branch names, or file paths. A root-owned systemd updater performs
+a fast-forward-only update from the configured `origin/main`, refreshes the
+project dependencies, and restarts the follower. It refuses updates if the
+checkout has local changes or a control/video session is active.
+
+During your one permitted SSH setup, first update `/opt/cf-robot` to the
+release containing this feature using the Pi upgrade procedure below. Then
+install and enable the root-owned updater and its path watcher:
+
+```sh
+sudo install -o root -g root -m 0755 /opt/cf-robot/deploy/cf-robot-update.sh /usr/local/sbin/cf-robot-update
+sudo install -o root -g root -m 0644 /opt/cf-robot/deploy/cf-robot-update.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 /opt/cf-robot/deploy/cf-robot-update.path /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cf-robot-update.path
+```
+
+This is a one-time privileged setup. The existing Access application protects
+the entire hostname, including `/update`, so no additional Tunnel route is
+needed. After this setup, ordinary code and dependency updates can be
+requested from the Mac over WSS without SSH.
+
 Check `journalctl -u cf-robot-follower -f` for failures. Confirm both this
 service and the separately installed `cloudflared` service are enabled and
 healthy after a Pi reboot. `GET /health` reports process availability and
@@ -292,6 +321,8 @@ obstacles or guarantee a collision-free path. The helper disconnects when
 finished, so do not rely on the servos to hold a load or keep the arm parked.
 
 To record a pose, manually place the follower in a safe parking position.
+The Pi helpers read the serial path already saved in
+`/etc/cf-robot/follower.env`, so they do not prompt for the USB device ID.
 Stop the follower service, then run the recorder from your normal SSH account:
 
 ```sh
@@ -299,9 +330,9 @@ sudo systemctl stop cf-robot-follower
 /opt/cf-robot/scripts/parking_record
 ```
 
-Enter the follower's full serial path. Check the displayed joint positions,
-then type `RECORD` to save them. The helper will refuse to run while the
-follower service is active. Restart the service after recording:
+Check the displayed joint positions, then type `RECORD` to save them. The
+helper will refuse to run while the follower service is active. Restart the
+service after recording:
 
 ```sh
 sudo systemctl start cf-robot-follower
@@ -315,11 +346,12 @@ sudo systemctl stop cf-robot-follower
 /opt/cf-robot/scripts/parking_set
 ```
 
-Enter the same serial path. Review the current and saved positions, clear the
-workspace, then type `MOVE` to confirm. The script moves in steps of at most
-1 degree per joint with a short pause between steps. After it finishes, place
-the leader manually at the same pose before starting teleoperation, then
-restart the follower service:
+Review the current and saved positions, clear the workspace, then type `MOVE`
+to confirm. The script moves in steps of at most
+0.25 degree, moving one servo at a time with a short pause between steps.
+This creates a smoother, slower ramp, but the intermediate poses can still
+collide with the workspace. After it finishes, place the leader manually at
+the same pose before starting teleoperation, then restart the follower service:
 
 ```sh
 sudo systemctl start cf-robot-follower
@@ -409,7 +441,7 @@ console and `wss://robot.example.com/control` for CLI control; video uses
 Configure Access for the entire hostname before operating the arm:
 
 1. Create a Cloudflare Access **self-hosted application** covering the whole
-   hostname, not just one path (`/health`, `/control`, and `/video`). Create a
+   hostname, including `/health`, `/control`, `/video`, and `/update`. Create a
    service token and a **Service Auth** policy allowing only that token.
 
 2. Copy the token's client ID and secret for entry into the laptop's private
@@ -459,6 +491,9 @@ mkdir -p "$HOME/Developer"
 git clone https://github.com/Davide-Grandis/lerobot-slave.git "$HOME/Developer/lerobot-arms"
 cd "$HOME/Developer/lerobot-arms"
 ```
+
+To update the controller code and refresh its dependencies later, run from
+the checkout root: `git pull --ff-only && .venv/bin/python -m pip install -e . 'lerobot[feetech]==0.6.1'`.
 
 Find the leader's serial device on the Mac with the arm connected:
 
@@ -512,13 +547,14 @@ the file in the same Terminal session before starting the CLI or web console.
    nano "$HOME/.config/cf-robot/controller.env"
    ```
 
-   Put these three lines in the file, replacing each placeholder with its
+   Put these four lines in the file, replacing each placeholder with its
    value. Keep the single quotes:
 
    ```sh
    export CF_ACCESS_CLIENT_ID='YOUR_CLOUDFLARE_CLIENT_ID'
    export CF_ACCESS_CLIENT_SECRET='YOUR_CLOUDFLARE_CLIENT_SECRET'
    export CF_ROBOT_ORIGIN_KEY='YOUR_PI_ORIGIN_KEY'
+   export CF_ROBOT_CONTROL_URL='wss://YOUR_PUBLIC_HOSTNAME/control'
    ```
 
 3. Set the file permissions:
@@ -527,13 +563,14 @@ the file in the same Terminal session before starting the CLI or web console.
    chmod 600 "$HOME/.config/cf-robot/controller.env"
    ```
 
-4. Before each controller session, load the file and verify that all three
-   values are present without printing them:
+4. Before each controller session, load the file and verify that the
+   credentials and WSS URL are present without printing them:
 
    ```sh
    source "$HOME/.config/cf-robot/controller.env"
-   test -n "$CF_ACCESS_CLIENT_ID" && test -n "$CF_ACCESS_CLIENT_SECRET" && test -n "$CF_ROBOT_ORIGIN_KEY" \
-     && echo "All three credentials loaded"
+   test -n "$CF_ACCESS_CLIENT_ID" && test -n "$CF_ACCESS_CLIENT_SECRET" \
+     && test -n "$CF_ROBOT_ORIGIN_KEY" && test -n "$CF_ROBOT_CONTROL_URL" \
+     && echo "Controller settings loaded"
    ```
 
 Before using this controller CLI, complete the leader setup above, including
@@ -563,6 +600,70 @@ Then run from the repository root:
 
 Press Ctrl-C to stop. The CLI does not silently reconnect after a dropped
 session: inspect the follower, realign both arms, then start again.
+
+#### Remote follower parking commands (WSS)
+
+These Mac commands use the authenticated `/control` WebSocket. Set
+`CF_ROBOT_CONTROL_URL` in `~/.config/cf-robot/controller.env` to
+`wss://<your-public-hostname>/control`, then source that file in the current
+Terminal as described above. They use the same Access credentials and origin
+key as teleoperation.
+
+The follower's USB path is stored on the Pi in
+`/etc/cf-robot/follower.env`; it is not needed on the Mac. The recorded
+parking pose for these Mac commands is saved locally at
+`~/.config/cf-robot/follower-parking.json`. The Pi-local `parking_record`
+and `parking_set` scripts instead use `/var/lib/cf-robot/parking/`.
+
+The Pi service must also be updated to a version that includes the measured
+pose in its WSS `ready` message. After pulling the client update on the Mac,
+refresh its editable installation to create the new command entry points:
+
+```sh
+.venv/bin/python -m pip install -e . 'lerobot[feetech]==0.6.1'
+```
+
+To record the follower's current measured pose without moving it, run:
+
+```sh
+.venv/bin/cf-robot-parking-record
+```
+
+Review the displayed pose and type `RECORD` to save it locally. This opens a
+follower control session, so do not run it during teleoperation.
+
+To move the follower toward the saved pose, run:
+
+```sh
+.venv/bin/cf-robot-parking-set
+```
+
+Clear the workspace and type `MOVE` when prompted. It sends the move as
+small, one-servo-at-a-time action updates over WSS; the server's per-step
+limit and control watchdog remain active. This command does not move the
+leader. Afterward, manually align the leader to the follower before starting
+teleoperation.
+
+#### Update the Pi over WSS
+
+After the one-time updater setup on the Pi, source `controller.env` in this
+Mac Terminal and run:
+
+```sh
+.venv/bin/cf-robot-update
+```
+
+The client requests the fixed `origin/main` fast-forward update over the
+Cloudflare Tunnel and polls `/health` until the Pi reports success or failure.
+It accepts no arbitrary shell commands or refs. Stop teleoperation and close
+the camera stream first; the Pi rejects updates while either session is active.
+If an update fails, the status reports the failed stage; local checkout
+changes are refused.
+
+The root-owned systemd path watcher triggers the updater. It updates only the
+configured GitHub repository's `main` branch, refreshes dependencies, and
+restarts the follower. The Mac does not need the Pi's follower USB path; that
+remains in the Pi's `FOLLOWER_PORT` setting.
 
 #### Browser console (phase 2)
 
@@ -604,13 +705,14 @@ requests; do not reverse-proxy it to the internet.
 | `CAMERA_DEVICE` | Pi environment file | Camera path passed to `--camera`; prefer `/dev/v4l/by-id/...`. |
 | `CF_ROBOT_ORIGIN_KEY` | Pi environment file **and** laptop environment | Same random key on both ends (minimum 32 characters); sent only during the control/video WebSocket handshakes. |
 | `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` | Laptop environment only | Access service token used for public `wss://` requests; never place these on the Pi or in browser code. |
+| `CF_ROBOT_CONTROL_URL` | Laptop `controller.env` | Public WSS control URL used by remote parking commands, for example `wss://robot.example.com/control`. |
 | `HF_HOME` | Pi service unit and calibration command | LeRobot/Hugging Face data directory for the `robot` user. |
 | `--listen-port` | Pi follower CLI | Loopback HTTP/WebSocket port, default `8765`; update Tunnel origin if changed. |
 | `--camera-width`, `--camera-height`, `--camera-fps` | Pi follower CLI | Video capture defaults `640`, `480`, `10`; fps must be 1-30. Update the unit if changing them. |
 | `--fps` | Laptop leader CLI or web CLI | Maximum leader action sampling rate, default `30`, accepted range 1-60; not a guaranteed end-to-end rate. |
 | `--listen-port` | Laptop web CLI | Loopback web-console port, default `8080`. |
 
-The Pi offers `GET /health`, `WS /control`, and `WS /video` behind the same
+The Pi offers `GET /health`, `WS /control`, `WS /video`, and `WS /update` behind the same
 Access hostname. The laptop web console offers `GET /`, `GET /api/status`,
 `POST /api/start`, `POST /api/stop`, `POST /api/heartbeat`, and
 `WS /ws/video` **only on localhost**. Its browser sends a heartbeat once

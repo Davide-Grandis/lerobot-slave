@@ -44,6 +44,7 @@ class ControlTests(unittest.TestCase):
         self.session = FollowerSession(lambda: self.robot, watchdog=0.1)
         self.session.start()
         self.assertTrue(self.session.wait_ready(1))
+        self.assertEqual(self.session.initial_observation, {joint: 0.0 for joint in JOINTS})
 
     def tearDown(self):
         self.session.stop()

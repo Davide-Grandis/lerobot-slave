@@ -28,18 +28,21 @@ cloud-hosted UI are involved.
 | --- | --- |
 | [`src/cf_robot/hardware.py`](../src/cf_robot/hardware.py) | Construct LeRobot `SO101Leader`, `SO101Follower`, and `OpenCVCamera`; extract joint observations. |
 | [`src/cf_robot/leader.py`](../src/cf_robot/leader.py) | Connect the laptop leader without interactive calibration; send actions at a configured maximum rate (default 30 fps); stop rather than auto-reconnect after failure. |
-| [`src/cf_robot/follower.py`](../src/cf_robot/follower.py) | Serve `/health`, `/control`, and `/video`; authenticate WebSocket upgrades; allow one control and one video connection. |
+| [`src/cf_robot/follower.py`](../src/cf_robot/follower.py) | Serve `/health`, `/control`, `/video`, and `/update`; authenticate WebSocket upgrades; allow one control and one video connection. |
 | [`src/cf_robot/control.py`](../src/cf_robot/control.py) | Own the follower in one thread; retain only the latest target; check alignment, command gap, and joint jumps; disconnect on stop/error. |
 | [`src/cf_robot/protocol.py`](../src/cf_robot/protocol.py) | Define protocol version 1, joint names, action validation, sequence and timestamp checks. |
 | [`src/cf_robot/auth.py`](../src/cf_robot/auth.py) | Validate the remote URL and attach Access and origin-key headers from the laptop environment. |
 | [`src/cf_robot/web.py`](../src/cf_robot/web.py) and [`src/cf_robot/index.html`](../src/cf_robot/index.html) | Serve local controls/status, monitor browser heartbeat, and relay JPEG frames to the browser. |
-| [`deploy/`](../deploy/) | Example Pi environment file and `systemd` unit. |
+| [`src/cf_robot/parking_client.py`](../src/cf_robot/parking_client.py) | Record the follower's measured pose locally on the Mac and send a saved parking pose to the Pi over the authenticated control WebSocket. |
+| [`deploy/`](../deploy/) | Example Pi environment, follower service, and the root-owned WSS update watcher/service. |
 
 ## Control and video protocol
 
 - The Pi accepts `/control` only after checking `X-CF-Robot-Key`. It creates
   one `FollowerSession`, connects the arm with `calibrate=False`, reads its
-  current joint positions, then sends `{"type":"ready","version":1}`.
+  current joint positions, then sends a versioned `ready` message containing
+  that measured pose. The Mac parking client records this pose locally or
+  uses it as the starting point when sending a saved parking pose.
 - Each subsequent control message is JSON with `version`, `type`, increasing
   `seq`, Unix-seconds `sent_at`, and exactly six numeric joint positions:
   `shoulder_pan.pos`, `shoulder_lift.pos`, `elbow_flex.pos`,
@@ -66,11 +69,16 @@ cloud-hosted UI are involved.
   The laptop relays them via local `/ws/video`; a video session does not arm
   the follower. Camera capture, JPEG encoding, and network bandwidth can
   affect latency; no audio or WebRTC is implemented.
+- `/update` accepts only a fixed versioned update request. The unprivileged
+  follower writes a request marker under `/var/lib/cf-robot`; a preinstalled
+  root-owned `systemd` path/service performs a fast-forward-only update from
+  `origin/main`, refreshes dependencies, and restarts the follower. It accepts
+  no shell command, branch, or path from the client.
 
 ## Trust boundaries
 
 Cloudflare Access should reject unauthenticated requests to **all** Pi
-paths. The laptop supplies `CF-Access-Client-Id` and
+paths, including `/update`. The laptop supplies `CF-Access-Client-Id` and
 `CF-Access-Client-Secret` on the WebSocket upgrade. Independently, the Pi
 requires a shared `CF_ROBOT_ORIGIN_KEY` (at least 32 characters) as
 `X-CF-Robot-Key` on both WebSocket routes. This limits the damage of an
