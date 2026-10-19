@@ -1,0 +1,19 @@
+deploy/cf-robot-update.service
+  s_dc8dc238aa0abd::t_04ee178d008c00 1-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5f7732085c5eadfb30d0ab916991c7ce0d9616a3",
+  "prompts": {},
+  "sessions": {
+    "s_dc8dc238aa0abd": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "pentagonal-platypus",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
