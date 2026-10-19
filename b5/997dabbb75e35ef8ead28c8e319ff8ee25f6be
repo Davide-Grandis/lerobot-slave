@@ -1,0 +1,19 @@
+operator/worker/wrangler.jsonc
+  s_dc8dc238aa0abd::t_a94720d81c448e 4,15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b5997dabbb75e35ef8ead28c8e319ff8ee25f6be",
+  "prompts": {},
+  "sessions": {
+    "s_dc8dc238aa0abd": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "pentagonal-platypus",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
