@@ -71,6 +71,22 @@ class ControlTests(unittest.TestCase):
         self.assertIn("leader=20.00", self.session.error)
         self.assertIn("delta=+20.00", self.session.error)
 
+    def test_midstream_jump_compares_with_previous_leader_target(self):
+        self.session.watchdog = 1.0
+        self.session.submit({joint: 0.0 for joint in JOINTS})
+        self.assertTrue(wait_for(lambda: len(self.robot.actions) == 1))
+
+        action = {joint: 0.0 for joint in JOINTS}
+        action["wrist_flex.pos"] = -5.01
+        self.session.submit(action)
+
+        self.assertTrue(wait_for(lambda: self.session.state == "error"))
+        self.assertEqual(len(self.robot.actions), 1)
+        self.assertIn("previous leader=0.00", self.session.error)
+        self.assertIn("leader=-5.01", self.session.error)
+        self.assertIn("delta=-5.01", self.session.error)
+        self.assertIn("reduce per-sample movement", self.session.error)
+
     def test_hardware_error_ends_session(self):
         self.session.stop()
         self.robot = FailingFollower()

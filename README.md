@@ -614,7 +614,7 @@ delay software shutdown.
 | WebSocket upgrade fails but health works | Tunnel origin must be HTTP on `127.0.0.1:8765`; check Access protection, the matching origin key, and WebSocket support at the zone. |
 | TLS certificate verification fails on macOS with WARP connected | Switch the WARP profile to DNS-only mode and retry; the WARP traffic proxy can interfere with TLS verification. |
 | `stale command or unsynchronized clocks` | NTP on both hosts and actual network delay/jitter; do not loosen freshness checks casually. |
-| `joint jump exceeds limit` | The error names each offending joint and reports the follower position, leader command, and difference in degrees. Align those joints within 5 degrees before retrying; fast leader movement may also exceed the per-command limit. |
+| `joint jump exceeds limit` | The error names each offending joint and reports the prior reference (initial follower reading or previous leader target), current leader command, and difference in degrees. Align before starting; during motion, reduce per-sample movement and retry. |
 | Web control stops when tab is hidden or closed | The page must continue sending heartbeats. Reopen it, inspect the follower, re-align, and restart. |
 
 ## Tests and limitations

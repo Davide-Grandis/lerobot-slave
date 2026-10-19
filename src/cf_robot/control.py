@@ -82,14 +82,20 @@ class FollowerSession:
                     if abs(target[name] - previous[name]) > self.max_step
                 }
                 if jumps:
+                    baseline_label = "follower" if not armed else "previous leader"
+                    next_step = (
+                        "align arms before starting"
+                        if not armed
+                        else "reduce per-sample movement and retry"
+                    )
                     details = ", ".join(
-                        f"{name}: follower={previous[name]:.2f}, "
+                        f"{name}: {baseline_label}={previous[name]:.2f}, "
                         f"leader={target[name]:.2f}, delta={delta:+.2f}"
                         for name, delta in jumps.items()
                     )
                     raise ProtocolError(
                         f"joint jump exceeds {self.max_step:g}-degree limit "
-                        f"({details}); align arms before starting"
+                        f"({details}); {next_step}"
                     )
                 robot.send_action(target)
                 previous = target
