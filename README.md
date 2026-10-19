@@ -35,6 +35,7 @@ this repository does not provision Cloudflare resources.
     - [Protect the hostname with Access](#protect-the-hostname-with-access)
   - [Leader side: controller laptop](#leader-side-controller-laptop)
     - [Set up and calibrate the leader](#set-up-and-calibrate-the-leader)
+    - [Update the controller laptop (macOS)](#update-the-controller-laptop-macos)
     - [CLI (phase 1)](#cli-phase-1)
     - [Remote follower parking commands (WSS)](#remote-follower-parking-commands-wss)
     - [Update the Pi over WSS](#update-the-pi-over-wss)
@@ -509,9 +510,6 @@ git clone https://github.com/Davide-Grandis/lerobot-slave.git "$HOME/Developer/l
 cd "$HOME/Developer/lerobot-arms"
 ```
 
-To update the controller code and refresh its dependencies later, run from
-the checkout root: `git pull --ff-only && .venv/bin/python -m pip install -e . 'lerobot[feetech]==0.6.1'`.
-
 Find the leader's serial device on the Mac with the arm connected:
 
 ```sh
@@ -543,6 +541,34 @@ Run LeRobot's interactive calibration for the SO-ARM101 leader:
 
 Replace `/dev/tty.usbmodemYOUR_LEADER_DEVICE` with the path found above. The
 `so101_leader` value passed to `--teleop.id` is the calibration ID; will use the same later as   `--arm-id`. Calibration is stored by LeRobot.
+
+#### Update the controller laptop (macOS)
+
+Run these commands from the Mac checkout whenever you need the latest
+controller code. `git pull --ff-only` fast-forwards without overwriting local
+changes; the editable install makes source-code-only changes available
+immediately:
+
+```sh
+cd "$HOME/Developer/lerobot-arms"
+git pull --ff-only
+```
+
+After changes to `pyproject.toml` dependencies or console-script entry points,
+refresh the editable install as well. This creates new commands such as
+`.venv/bin/cf-robot-update`; do not recreate the virtual environment:
+
+```sh
+.venv/bin/python -m pip install -e . 'lerobot[feetech]==0.6.1'
+```
+
+Verify that the WSS update and parking commands are installed:
+
+```sh
+ls .venv/bin/cf-robot-update \
+  .venv/bin/cf-robot-parking-record \
+  .venv/bin/cf-robot-parking-set
+```
 
 #### CLI (phase 1)
 
