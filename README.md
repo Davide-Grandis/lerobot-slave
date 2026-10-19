@@ -171,24 +171,18 @@ sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache
    `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A1B2-if00-port0`.
    A camera device under `/dev/v4l/by-id/` is not the arm's serial port.
 
-3. **Calibrate using that path.** Paste the full path at the prompt.
-   The command verifies that it is a character device and that the
-   `robot` service user can access it before starting LeRobot's
-   interactive calibration:
+3. **Calibrate using that path.** Ensure no control session is active, then
+   run the helper from your normal SSH account (do not prefix the script
+   with `sudo`; it uses `sudo` internally):
 
    ```sh
-   read -r -p 'Follower serial path (/dev/serial/by-id/...): ' FOLLOWER_PORT
-   if [ -c "$FOLLOWER_PORT" ] &&
-      sudo -u robot test -r "$FOLLOWER_PORT" &&
-      sudo -u robot test -w "$FOLLOWER_PORT"; then
-     sudo -u robot env HF_HOME=/var/lib/cf-robot /opt/cf-robot/venv/bin/lerobot-calibrate \
-       --robot.type=so101_follower \
-       --robot.port="$FOLLOWER_PORT" \
-       --robot.id=so101_follower
-   else
-     echo "Wrong serial path or robot user lacks device access: $FOLLOWER_PORT" >&2
-   fi
+   /opt/cf-robot/scripts/calibrate-follower.sh
    ```
+
+   Enter the full `/dev/serial/by-id/...` path when prompted. The helper
+   verifies the path and `robot` user's read/write access, then launches
+   LeRobot's interactive calibration with `so101_follower` as the calibration
+   ID.
 
 When calibration finishes, LeRobot saves it automatically under
 `/var/lib/cf-robot/lerobot/calibration/robots/so_follower/so101_follower.json`.
