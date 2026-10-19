@@ -2,6 +2,8 @@
 
 from cf_robot.protocol import JOINTS
 
+CAMERA_WARMUP_S = 5
+
 
 def make_leader(port, arm_id):
     from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
@@ -19,7 +21,13 @@ def make_camera(device, width, height, fps):
     from lerobot.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
 
     return OpenCVCamera(
-        OpenCVCameraConfig(index_or_path=device, width=width, height=height, fps=fps)
+        OpenCVCameraConfig(
+            index_or_path=device,
+            width=width,
+            height=height,
+            fps=fps,
+            warmup_s=CAMERA_WARMUP_S,
+        )
     )
 
 

@@ -229,10 +229,12 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             return
         async with video_lock:
             camera = None
+            camera_connected = False
             disconnected = None
             try:
                 camera = camera_factory()
                 await asyncio.to_thread(camera.connect)
+                camera_connected = True
                 import cv2
 
                 async def watch_disconnect():
@@ -259,7 +261,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                     disconnected.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await disconnected
-                if camera is not None:
+                if camera is not None and camera_connected:
                     try:
                         await asyncio.to_thread(camera.disconnect)
                     except Exception:

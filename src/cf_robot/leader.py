@@ -50,6 +50,7 @@ async def run_teleop(
     headers = access_headers(url)
     leader = None
     reader = None
+    operation_error = None
     async with connect(url, additional_headers=headers, open_timeout=10, ping_interval=10, ping_timeout=5) as socket:
         first = json.loads(await asyncio.wait_for(socket.recv(), timeout=25))
         if first.get("type") != "ready" or first.get("version") != VERSION:
@@ -66,6 +67,12 @@ async def run_teleop(
         try:
             leader = leader_factory()
             await asyncio.to_thread(leader.connect, calibrate=False)
+            if getattr(leader, "is_connected", True) is False:
+                raise RuntimeError(
+                    "leader connect() returned but the driver reports disconnected; "
+                    "check the USB port and close any other process using the leader"
+                )
+            on_status({"type": "status", "state": "leader connected"})
             latest_feedback = {"observation": None, "observed_at": None}
 
             def handle_status(message):
@@ -172,13 +179,20 @@ async def run_teleop(
                         await asyncio.wait_for(stop.wait(), timeout=remaining)
                     except asyncio.TimeoutError:
                         pass
+        except BaseException as exc:
+            operation_error = exc
+            raise
         finally:
             if reader is not None:
                 reader.cancel()
                 with contextlib.suppress(asyncio.CancelledError, ConnectionError, RuntimeError):
                     await reader
             if leader is not None:
-                await asyncio.to_thread(leader.disconnect)
+                try:
+                    await asyncio.to_thread(leader.disconnect)
+                except Exception:
+                    if operation_error is None:
+                        raise
 
 
 def main():
