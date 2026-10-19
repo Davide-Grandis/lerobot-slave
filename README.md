@@ -87,8 +87,8 @@ after a Pi reboot.
 
 #### Step 2: Install the code
 
-The path **`/opt/cf-robot`** matches the `systemd` unit.
-Run: 
+Clone the project into **`/opt/cf-robot`**, the path expected by the
+`systemd` unit:
 
 ```sh
 sudo git clone https://github.com/Davide-Grandis/lerobot-slave.git /opt/cf-robot
@@ -140,7 +140,8 @@ sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache
   'torch==2.7.1+cpu' 'torchvision==0.22.1'
 ```
 
-Then install this project and LeRobot's Feetech support:
+Install this project and LeRobot's Feetech support, then check that the
+installed package requirements are consistent:
 
 ```sh
 sudo env TMPDIR=/var/tmp /opt/cf-robot/venv/bin/python -m pip install --no-cache-dir \
@@ -317,7 +318,7 @@ faults also cannot be repaired automatically by restarting.
 Schedule upgrades while the follower is clear and **no control session is
 active**. For a code-only change (no new Python dependencies or changes to
 the systemd unit), the editable installation already points to the Git
-checkout. On the Pi:
+checkout. Stop the service, then fast-forward the Pi's checkout:
 
 ```sh
 sudo systemctl stop cf-robot-follower &&
@@ -408,10 +409,10 @@ brew install python@3.13
 ```
 
 This installs a Python 3.13 interpreter; it does not change the macOS
-`python3` default. Use `python3.13 -m venv .venv` below to create the
-project environment with the supported interpreter. If you already created
-`.venv` with Python 3.14, rename it first (for example,
-`mv .venv .venv-py314`) rather than reusing it.
+`python3` default. You will use `python3.13 -m venv .venv` later to create the
+project environment with the supported interpreter.
+
+Create a folder for the project and clone this repo:
 
 ```sh
 mkdir -p "$HOME/Developer"
@@ -425,12 +426,13 @@ Find the leader's serial device on the Mac with the arm connected:
 ls /dev/tty.usb*
 ```
 
-Create a venv environment and install the project.
-
 Use the full `/dev/tty.usb...` path shown. If several adapters are
 connected, unplug the leader's USB cable, run the command again, reconnect
 it, and run the command once more; the newly appearing `tty` path is the
 leader. Use this same path for calibration and both controller commands below.
+
+Create a virtual environment with Python 3.13, confirm its version, and
+install the project with LeRobot and Feetech support:
 
 ```sh
 python3.13 -m venv .venv
@@ -438,7 +440,7 @@ python3.13 -m venv .venv
 .venv/bin/python -m pip install -e . 'lerobot[feetech]==0.6.1'
 ```
 
-Calibration: starts LeRobot’s interactive calibration for the SO-ARM101 leader.
+Run LeRobot's interactive calibration for the SO-ARM101 leader:
 
 ```sh
 .venv/bin/lerobot-calibrate \
