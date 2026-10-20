@@ -257,10 +257,14 @@ def _render(build_version, leader_sample, follower_sample, command_buffer="", st
     print(f"ARMS MONITOR [{build_version}] -- Ctrl-C or q to stop")
     print("Units: J1-J5 deg; J6 0-100; raw counts/MIN/MAX are ticks.")
     print("Leader values are the normalized target values teleoperation sends.")
-    print(
+    header = (
         f"{'Joint':17} {'Leader':>8} {'Follower':>8} {'Delta':>8} "
         f"{'Unit':>6} {'L torque':>8} {'F torque':>8}"
     )
+    separator = "=" * len(header)
+    print(separator)
+    print(header)
+    print(separator)
     for index, joint in enumerate(JOINTS, start=1):
         leader_value = leader_sample["values"][joint]
         follower_value = follower_sample["values"][joint]
@@ -280,6 +284,8 @@ def _render(build_version, leader_sample, follower_sample, command_buffer="", st
             f"   raw ticks: L {leader_raw:4d} [{leader_limits['min']}..{leader_limits['max']}] "
             f"F {follower_raw:4d} [{follower_limits['min']}..{follower_limits['max']}]"
         )
+        print()
+    print(separator)
     print(
         f"Samples: leader={leader_sample['sampled_at']:.3f}, "
         f"follower={follower_sample['sampled_at']:.3f}"

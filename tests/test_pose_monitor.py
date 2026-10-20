@@ -1,9 +1,11 @@
 import threading
 import unittest
+from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from cf_robot.pose_compare_client import (
+    _render,
     git_build_version,
     is_follower_sample,
     parse_pose_command,
@@ -134,6 +136,35 @@ class FakeArm:
 
 
 class PoseMonitorTests(unittest.TestCase):
+    def test_monitor_table_separates_header_and_joint_blocks(self):
+        values = {joint: float(index) for index, joint in enumerate(JOINTS)}
+        raw = {joint: 2000 for joint in JOINTS}
+        torque = {joint: index % 2 == 0 for index, joint in enumerate(JOINTS)}
+        limits = {joint: {"min": 100, "max": 3900} for joint in JOINTS}
+        sample = {
+            "values": values,
+            "raw": raw,
+            "torque": torque,
+            "limits": limits,
+            "sampled_at": 1.0,
+        }
+        output = StringIO()
+
+        with patch("cf_robot.pose_compare_client.sys.stdout", output):
+            _render("314-gabcdef1", sample, sample)
+
+        lines = output.getvalue().splitlines()
+        self.assertIn("ARMS MONITOR [314-gabcdef1]", lines[0])
+        header_index = next(index for index, line in enumerate(lines) if line.startswith("Joint"))
+        self.assertEqual(lines[header_index - 1], "=" * len(lines[header_index]))
+        self.assertEqual(lines[header_index + 1], lines[header_index - 1])
+        for joint_id in range(1, 7):
+            row = next(index for index, line in enumerate(lines) if line.startswith(f"J{joint_id} "))
+            self.assertTrue(lines[row + 1].startswith("   raw ticks:"))
+            self.assertEqual(lines[row + 2], "")
+        joint_six = next(index for index, line in enumerate(lines) if line.startswith("J6 "))
+        self.assertEqual(lines[joint_six + 3], "=" * len(lines[header_index]))
+
     @patch("cf_robot.pose_compare_client.subprocess.run")
     def test_monitor_version_uses_git_count_hash_and_dirty_marker(self, run_git):
         run_git.side_effect = [
