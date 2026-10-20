@@ -1,0 +1,35 @@
+deploy/cf-robot-power.py
+  s_8355403897ecc2::t_0166da0341fd2f 1-62
+docs/web-pose-monitor.md
+  s_163bd0a0d4d6ac::t_d427ebb0a35dd3 43-55,59-60
+src/cf_robot/operator/app.css
+  s_163bd0a0d4d6ac::t_bd8d088e7001f5 67,75-76,177,201-203,227-240,242-246,263,266,279
+src/cf_robot/operator/app.js
+  s_163bd0a0d4d6ac::t_5baa9c30dd7d30 143,261,264-269,309-312,378-380
+src/cf_robot/operator/index.html
+  s_163bd0a0d4d6ac::t_e6bc358a9c0272 7,27-37,47-52,55,95,136,138-139,146,149,153,172-197,199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "38f14d14eb875462d0d9d2d137517347e1174450",
+  "prompts": {},
+  "sessions": {
+    "s_163bd0a0d4d6ac": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "platinum-bedbug",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    },
+    "s_8355403897ecc2": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "balanced-mascarpone",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
