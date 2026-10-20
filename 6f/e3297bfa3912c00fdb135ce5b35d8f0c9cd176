@@ -1,0 +1,19 @@
+tests/test_integration.py
+  s_93e8a4658813d1::t_6d26bc1559b00d 228,232-233,241-243,253-282,295,301-302,322-338
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6fe3297bfa3912c00fdb135ce5b35d8f0c9cd176",
+  "prompts": {},
+  "sessions": {
+    "s_93e8a4658813d1": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "troubled-jackfruit",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
