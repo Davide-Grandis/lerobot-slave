@@ -1,4 +1,4 @@
-"""Live leader/follower pose comparison with optional torque release."""
+"""Live leader/follower monitor with explicit follower commands."""
 
 import argparse
 import asyncio
@@ -6,22 +6,50 @@ import contextlib
 import json
 import math
 import os
+from pathlib import Path
 import re
+import subprocess
 import sys
+import termios
 import threading
 import time
-import termios
 from urllib.parse import urlsplit, urlunsplit
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
+from cf_robot import __version__
 from cf_robot.auth import access_headers
 from cf_robot.hardware import joint_positions, make_leader
 from cf_robot.protocol import JOINTS, VERSION
 from cf_robot.servo_maintenance import read_servo_limits
 
 SAMPLE_INTERVAL_S = 0.1
+
+
+def git_build_version():
+    repo_root = Path(__file__).resolve().parents[2]
+
+    def git(*args):
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return result.stdout.strip()
+
+    try:
+        commit_count = git("rev-list", "--count", "HEAD")
+        commit_hash = git("rev-parse", "--short=7", "HEAD")
+        dirty = bool(git("status", "--porcelain"))
+        if not commit_count.isdigit() or not commit_hash:
+            raise ValueError("git returned no build revision")
+        return f"{commit_count}-g{commit_hash}{'*' if dirty else ''}"
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return f"pkg-{__version__}"
 
 
 def monitor_url(control_url):
@@ -185,7 +213,7 @@ def _read_leader(leader, loop, samples, stop):
         loop.call_soon_threadsafe(enqueue)
 
     try:
-        # Avoid LeRobot's configure path; only the explicit release mode writes torque.
+        # Avoid LeRobot's configure path; this monitor only reads the leader bus.
         bus.connect()
         connected = True
         limits = read_servo_limits(bus)
@@ -223,10 +251,10 @@ def _read_leader(leader, loop, samples, stop):
                 publish({"type": "leader_error", "message": f"read-only disconnect failed: {exc}"})
 
 
-def _render(leader_sample, follower_sample, command_buffer="", status_message=""):
+def _render(build_version, leader_sample, follower_sample, command_buffer="", status_message=""):
     if sys.stdout.isatty():
         sys.stdout.write("\033[H\033[J")
-    print("ARMS MONITOR -- Ctrl-C or q to stop")
+    print(f"ARMS MONITOR [{build_version}] -- Ctrl-C or q to stop")
     print("Units: J1-J5 deg; J6 0-100; raw counts/MIN/MAX are ticks.")
     print("Leader values are the normalized target values teleoperation sends.")
     print(
@@ -265,7 +293,7 @@ def _render(leader_sample, follower_sample, command_buffer="", status_message=""
     sys.stdout.flush()
 
 
-async def monitor_poses(url, port, arm_id):
+async def monitor_poses(url, port, arm_id, build_version):
     leader = make_leader(port, arm_id)
     stop = threading.Event()
     samples = asyncio.Queue(maxsize=4)
@@ -421,6 +449,7 @@ async def monitor_poses(url, port, arm_id):
 
                 if leader_sample is not None and follower_sample is not None:
                     _render(
+                        build_version,
                         leader_sample,
                         follower_sample,
                         terminal.buffer,
@@ -474,6 +503,7 @@ def main():
                 monitor_url(args.url),
                 args.port,
                 args.arm_id,
+                git_build_version(),
             )
         )
     except KeyboardInterrupt:

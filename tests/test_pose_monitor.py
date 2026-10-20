@@ -3,7 +3,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from cf_robot.pose_compare_client import is_follower_sample, parse_pose_command
+from cf_robot.pose_compare_client import (
+    git_build_version,
+    is_follower_sample,
+    parse_pose_command,
+)
 from cf_robot.protocol import JOINTS
 from cf_robot.pose_monitor import (
     execute_pose_command,
@@ -130,6 +134,16 @@ class FakeArm:
 
 
 class PoseMonitorTests(unittest.TestCase):
+    @patch("cf_robot.pose_compare_client.subprocess.run")
+    def test_monitor_version_uses_git_count_hash_and_dirty_marker(self, run_git):
+        run_git.side_effect = [
+            SimpleNamespace(stdout="314\n"),
+            SimpleNamespace(stdout="abcdef1\n"),
+            SimpleNamespace(stdout=" M src/cf_robot/pose_compare_client.py\n"),
+        ]
+        self.assertEqual(git_build_version(), "314-gabcdef1*")
+        self.assertEqual(run_git.call_count, 3)
+
     def _check_stream(self, stream, factory_path):
         arm = FakeArm()
         stop = threading.Event()

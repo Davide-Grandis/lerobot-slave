@@ -75,6 +75,8 @@ At about 10 Hz it displays, per joint, the leader action value (the normalized
 value the teleoperation loop sends), follower readback, their difference, raw
 servo counts, servo MIN/MAX ticks, and torque-enabled status. By default it
 preserves the existing torque state and sends no position goals at startup.
+The title includes the Git commit count and short hash; `*` marks a dirty
+checkout.
 Torque changes and movement require explicit commands. Disabling torque may
 let a joint sag; support it before using `TD`. Stop it with Ctrl-C or `q`.
 Close the Operator UI or any other process using the leader USB port first.
