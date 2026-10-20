@@ -36,18 +36,18 @@ class BrowserPoseMonitor:
     def snapshot(self):
         return {**self.status, "running": self.running}
 
-    def start(self, release_torque):
+    def start(self):
         if self.running:
             raise RuntimeError("pose monitor is already running")
         self.stop_event = threading.Event()
         self.last_heartbeat = time.monotonic()
         self.pending_since = None
         self.status = {
-            "state": "connecting", "error": None, "release_torque": release_torque,
+            "state": "connecting", "error": None,
             "leader": None, "follower": None, "leader_torque": None,
             "follower_torque": None, "command": None, "command_pending": False,
         }
-        self.task = asyncio.create_task(self.run(release_torque))
+        self.task = asyncio.create_task(self.run())
 
     def stop(self):
         if self.running:
@@ -93,7 +93,7 @@ class BrowserPoseMonitor:
             raise
         return {"command_id": self.command_id}
 
-    async def run(self, release_torque):
+    async def run(self):
         leader_task = None
         watchdog = asyncio.create_task(self.watch_browser())
         try:
@@ -103,21 +103,11 @@ class BrowserPoseMonitor:
                 max_size=2 * 1024 * 1024,
             ) as socket:
                 self.socket = socket
-                await socket.send(json.dumps({
-                    "version": VERSION, "type": "start", "release_torque": release_torque,
-                }))
+                await socket.send(json.dumps({"version": VERSION, "type": "start"}))
                 started = json.loads(await asyncio.wait_for(socket.recv(), 15))
-                if started.get("type") == "torque_release_confirmation_required":
-                    if not release_torque or self.stop_event.is_set():
-                        raise RuntimeError("torque release cancelled")
-                    await socket.send(json.dumps({
-                        "version": VERSION, "type": "confirm_torque_release",
-                    }))
-                    started = json.loads(await asyncio.wait_for(socket.recv(), 15))
                 if (
                     started.get("type") != "monitor_started"
                     or started.get("version") != VERSION
-                    or started.get("release_torque") is not release_torque
                 ):
                     raise RuntimeError(started.get("message", "invalid monitor response"))
                 if self.port and not self.stop_event.is_set():
@@ -128,7 +118,7 @@ class BrowserPoseMonitor:
 
                     leader_task = asyncio.create_task(asyncio.to_thread(
                         self.leader_reader, self.port, self.arm_id,
-                        self.stop_event, publish, release_torque,
+                        self.stop_event, publish,
                     ))
                 if not self.stop_event.is_set():
                     self.status["state"] = "ready"
@@ -145,14 +135,14 @@ class BrowserPoseMonitor:
                         raise RuntimeError("follower did not confirm monitor shutdown")
                     try:
                         message = json.loads(await asyncio.wait_for(socket.recv(), 0.2))
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         continue
                     if message.get("type") in ("error", "monitor_cancelled"):
                         raise RuntimeError(message.get("message", "monitor cancelled"))
                     if message.get("type") == "monitor_finished":
                         break
                     self.publish(message)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surface hardware failures without losing cleanup
             self.status.update(state="error", error=str(exc))
         finally:
             self.socket = None
@@ -161,7 +151,7 @@ class BrowserPoseMonitor:
             if leader_task is not None:
                 try:
                     await leader_task
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - serial adapters use SDK-specific errors
                     self.status.update(state="error", error=str(exc))
             watchdog.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -197,18 +187,12 @@ def install_pose_routes(app, monitor, require_origin, control_busy, stop_latched
             raise HTTPException(409, "stop teleoperation and clear its safety latch first")
         try:
             body = await request.json()
-            if (
-                not isinstance(body, dict)
-                or not isinstance(body.get("release_torque"), bool)
-                or set(body) - {"release_torque", "confirmation"}
-            ):
-                raise ValueError("release_torque must be a boolean")
-            if body["release_torque"] and body.get("confirmation") != "RELEASE":
-                raise ValueError("support both arms and type RELEASE before disabling torque")
+            if body != {}:
+                raise ValueError("pose monitor startup preserves the current torque state")
             # Recheck after reading the request: another start may have won the race.
             if control_busy() or stop_latched():
                 raise RuntimeError("teleoperation is active or safety-latched")
-            monitor.start(body["release_torque"])
+            monitor.start()
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(409, str(exc)) from exc
         return monitor.snapshot()

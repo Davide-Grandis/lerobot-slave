@@ -1,4 +1,5 @@
 import { JOINTS, alignmentDelta, createArmViewer, forwardKinematics } from "./arm-viewer.js";
+import { createPoseMonitor } from "./pose-monitor.js";
 
 const state = {
   controllerBase: localStorage.getItem("cf-robot-controller-origin")
@@ -64,11 +65,12 @@ const elements = {
 };
 
 const viewer = createArmViewer(elements.canvas);
+let poseMonitor = null;
 
 function localControllerUrl() {
   let url;
   try {
-    url = new URL(state.controllerBase);
+    url = new URL(elements.pairingOrigin.value.trim());
   } catch {
     throw new Error("Enter a valid local controller address.");
   }
@@ -144,8 +146,9 @@ function setCameraLive(live, message = "") {
 }
 
 function updateTheme() {
-  const dark = localStorage.getItem("cf-robot-theme") === "dark";
+  const dark = localStorage.getItem("cf-robot-theme") !== "light";
   document.documentElement.dataset.theme = dark ? "dark" : "light";
+  document.querySelector('meta[name="theme-color"]').content = dark ? "#18211f" : "#e9e6d9";
   $("theme-toggle").textContent = dark ? "☼" : "◐";
 }
 
@@ -220,9 +223,9 @@ function updateButtons(status) {
   const cameraLive = Boolean(status.camera_live);
   const browserCameraLive = state.lastFrameAt !== null && Date.now() - state.lastFrameAt <= 1500;
   const stopped = Boolean(status.estop_latched);
-  elements.start.disabled = !state.paired || !cameraLive || !browserCameraLive || status.running || stopped;
+  elements.start.disabled = !state.paired || !cameraLive || !browserCameraLive || status.running || stopped || Boolean(poseMonitor?.running);
   elements.stop.disabled = !status.running;
-  elements.estop.disabled = status.running ? stopped : !stopped;
+  elements.estop.disabled = status.running || poseMonitor?.running ? stopped : !stopped;
   elements.estop.textContent = stopped ? "↻  RE-ARM / INSPECT" : "■   SOFTWARE STOP";
   elements.leaderConnect.disabled = !connected || status.leader_connected || state.manualBusy;
   elements.leaderDisconnect.disabled = !connected || !status.leader_connected || state.manualBusy;
@@ -549,6 +552,12 @@ elements.pairingOrigin.value = state.controllerBase;
 makeJogControls();
 updateTheme();
 connectWorkerIdentity();
+poseMonitor = createPoseMonitor({
+  request: agentRequest,
+  paired: () => state.paired,
+  controlStatus: () => state.agent,
+  onChange: () => updateButtons(state.agent || {}),
+});
 
 $("theme-toggle").addEventListener("click", () => {
   const dark = document.documentElement.dataset.theme !== "dark";

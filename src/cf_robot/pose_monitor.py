@@ -45,23 +45,18 @@ def _sample(device, side, limits):
     }
 
 
-def prepare_bus_torque(bus, side, release_enabled, publish):
-    """Report torque state; optionally disable enabled servos, never re-enable."""
-    before = bus.sync_read("Torque_Enable", normalize=False, num_retry=2)
-    if release_enabled:
-        for joint, motor in zip(JOINTS, MOTORS, strict=True):
-            if before[motor]:
-                bus.write("Torque_Enable", motor, 0, normalize=False, num_retry=2)
-    after = bus.sync_read("Torque_Enable", normalize=False, num_retry=2)
+def report_bus_torque(bus, side, publish):
+    """Report torque state without changing it."""
+    state = bus.sync_read("Torque_Enable", normalize=False, num_retry=2)
     publish(
         {
             "type": f"{side}_torque",
             "before": {
-                joint: bool(before[joint.removesuffix(".pos")])
+                joint: bool(state[joint.removesuffix(".pos")])
                 for joint in JOINTS
             },
             "after": {
-                joint: bool(after[joint.removesuffix(".pos")])
+                joint: bool(state[joint.removesuffix(".pos")])
                 for joint in JOINTS
             },
         }
@@ -80,9 +75,6 @@ def validate_pose_command(message):
     ):
         raise ValueError("command_id must be a positive integer")
     joint_id = message.get("joint_id")
-    if not isinstance(joint_id, int) or isinstance(joint_id, bool) or not 1 <= joint_id <= 6:
-        raise ValueError("joint_id must be from 1 through 6")
-
     mode = message.get("mode")
     if mode == "torque":
         if (
@@ -90,8 +82,16 @@ def validate_pose_command(message):
             or not isinstance(message.get("enabled"), bool)
         ):
             raise ValueError("torque command requires enabled=true or false")
+        if joint_id != "*" and (
+            not isinstance(joint_id, int)
+            or isinstance(joint_id, bool)
+            or not 1 <= joint_id <= 6
+        ):
+            raise ValueError("torque command joint_id must be J1-J6 or *")
         return dict(message)
 
+    if not isinstance(joint_id, int) or isinstance(joint_id, bool) or not 1 <= joint_id <= 6:
+        raise ValueError("joint_id must be from 1 through 6")
     if (
         set(message) != {"version", "type", "command_id", "joint_id", "mode", "value"}
         or mode not in ("ticks", "degrees", "percent")
@@ -113,11 +113,17 @@ def validate_pose_command(message):
 
 
 def _publish_command_result(report, command, state, **details):
+    joint_id = command["joint_id"]
+    if isinstance(joint_id, int):
+        details.setdefault(
+            "joint_name",
+            JOINTS[joint_id - 1].removesuffix(".pos").replace("_", " ").title(),
+        )
     report(
         {
             "type": "command_result",
             "command_id": command["command_id"],
-            "joint_id": command["joint_id"],
+            "joint_id": joint_id,
             "state": state,
             **details,
         }
@@ -127,25 +133,61 @@ def _publish_command_result(report, command, state, **details):
 def execute_pose_command(device, limits, command, stop, report):
     """Execute one validated command on one follower joint only."""
     bus = device.bus
+    if command["mode"] == "torque":
+        joint_ids = range(1, 7) if command["joint_id"] == "*" else (command["joint_id"],)
+        joint_results = []
+        for joint_id in joint_ids:
+            joint = JOINTS[joint_id - 1]
+            motor = MOTORS[joint_id - 1]
+            try:
+                torque_enabled = bool(
+                    bus.read("Torque_Enable", motor, normalize=False, num_retry=2)
+                )
+                if command["enabled"] and not torque_enabled:
+                    present = int(
+                        bus.read("Present_Position", motor, normalize=False, num_retry=2)
+                    )
+                    bus.write("Goal_Position", motor, present, normalize=False, num_retry=2)
+                    bus.write("Torque_Enable", motor, 1, normalize=False, num_retry=2)
+                elif not command["enabled"] and torque_enabled:
+                    bus.write("Torque_Enable", motor, 0, normalize=False, num_retry=2)
+                torque_enabled = bool(
+                    bus.read("Torque_Enable", motor, normalize=False, num_retry=2)
+                )
+                joint_results.append(
+                    {
+                        "joint_id": joint_id,
+                        "joint_name": joint.removesuffix(".pos").replace("_", " ").title(),
+                        "torque_enabled": torque_enabled,
+                        "message": "torque enabled" if torque_enabled else "torque released",
+                    }
+                )
+            except Exception as exc:
+                joint_results.append(
+                    {
+                        "joint_id": joint_id,
+                        "joint_name": joint.removesuffix(".pos").replace("_", " ").title(),
+                        "message": f"failed: {exc}",
+                    }
+                )
+                break
+        succeeded = all(not result["message"].startswith("failed:") for result in joint_results)
+        details = "; ".join(
+            f"{result['joint_name']} (J{result['joint_id']}): {result['message']}"
+            for result in joint_results
+        )
+        _publish_command_result(
+            report,
+            command,
+            "succeeded" if succeeded else "partial",
+            message=details,
+            joint_results=joint_results,
+        )
+        return
+
     joint = JOINTS[command["joint_id"] - 1]
     motor = MOTORS[command["joint_id"] - 1]
     torque_enabled = bool(bus.read("Torque_Enable", motor, normalize=False, num_retry=2))
-
-    if command["mode"] == "torque":
-        if command["enabled"]:
-            if not torque_enabled:
-                present = int(bus.read("Present_Position", motor, normalize=False, num_retry=2))
-                bus.write("Goal_Position", motor, present, normalize=False, num_retry=2)
-                bus.write("Torque_Enable", motor, 1, normalize=False, num_retry=2)
-            torque_enabled = bool(bus.read("Torque_Enable", motor, normalize=False, num_retry=2))
-            _publish_command_result(report, command, "succeeded", torque_enabled=torque_enabled)
-        else:
-            if torque_enabled:
-                bus.write("Torque_Enable", motor, 0, normalize=False, num_retry=2)
-            torque_enabled = bool(bus.read("Torque_Enable", motor, normalize=False, num_retry=2))
-            _publish_command_result(report, command, "succeeded", torque_enabled=torque_enabled)
-        return
-
     if not torque_enabled:
         _publish_command_result(
             report,
@@ -269,6 +311,7 @@ def execute_pose_command(device, limits, command, stop, report):
             report,
             command,
             state,
+            message="position reached" if state == "succeeded" else "positioning cancelled",
             current=present_units,
             target=target_units,
         )
@@ -276,8 +319,8 @@ def execute_pose_command(device, limits, command, stop, report):
         bus.write("Goal_Velocity", motor, previous_speed, normalize=False, num_retry=1)
 
 
-def stream_leader_pose(port, arm_id, stop, publish, release_enabled=False):
-    """Sample the leader bus without configuring; optionally disable enabled torque."""
+def stream_leader_pose(port, arm_id, stop, publish):
+    """Sample the leader bus without configuring or changing torque."""
     leader = make_leader(port, arm_id)
     bus = leader.bus
     connected = False
@@ -285,7 +328,7 @@ def stream_leader_pose(port, arm_id, stop, publish, release_enabled=False):
         bus.connect()
         connected = True
         limits = read_servo_limits(bus)
-        prepare_bus_torque(bus, "leader", release_enabled, publish)
+        report_bus_torque(bus, "leader", publish)
         while not stop.is_set():
             started = time.monotonic()
             publish(_sample(leader, "leader", limits))
@@ -302,11 +345,10 @@ def stream_follower_pose(
     arm_id,
     stop,
     publish,
-    release_enabled=False,
     commands=None,
     command_busy=None,
 ):
-    """Read follower positions; optionally disable torque already enabled."""
+    """Read follower positions and process commands without startup torque changes."""
     follower = make_follower(port, arm_id)
     bus = follower.bus
     connected = False
@@ -314,7 +356,7 @@ def stream_follower_pose(
         bus.connect()
         connected = True
         limits = read_servo_limits(bus)
-        prepare_bus_torque(bus, "follower", release_enabled, publish)
+        report_bus_torque(bus, "follower", publish)
         while not stop.is_set():
             if commands is not None:
                 try:

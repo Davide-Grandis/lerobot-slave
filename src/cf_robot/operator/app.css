@@ -36,10 +36,7 @@ html { min-width: 320px; background: var(--paper); }
 body {
   margin: 0;
   color: var(--ink);
-  background:
-    radial-gradient(ellipse at 82% 0%, rgb(245 231 188 / 58%), transparent 34rem),
-    repeating-linear-gradient(0deg, transparent 0 39px, rgb(117 132 114 / 7%) 40px),
-    var(--paper);
+  background: var(--paper);
   min-height: 100vh;
 }
 button, input, select { font: inherit; }
@@ -201,6 +198,35 @@ h1 em { color: var(--orange); font-weight: 400; }
 .rearm-dialog code { color: var(--orange); }
 .dialog-actions { justify-content: flex-end; gap: 8px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+[hidden] { display: none !important; }
+.utility-tabs { display: flex; gap: 6px; margin: 18px 0; border-bottom: 1px solid var(--line); }
+.utility-tabs button { padding: 12px 16px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--muted); cursor: pointer; font: 700 11px "SFMono-Regular", Consolas, monospace; }
+.utility-tabs [aria-selected="true"] { color: var(--ink); border-bottom-color: var(--orange); }
+.pose-panel { margin-top: 17px; animation: arrive .3s both; }
+.pose-body { padding: 18px; }
+.pose-start-controls, .pose-command-form { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; }
+.pose-start-controls label, .pose-command-form label { display: grid; gap: 7px; color: var(--muted); font-size: 11px; }
+.pose-body select, .pose-body input:not([type="checkbox"]) { min-height: 38px; max-width: 100%; border: 1px solid var(--line); background: var(--panel-deep); color: var(--ink); padding: 8px; }
+.pose-body .session-copy { min-height: 0; }
+#pose-message { font-size: 12px; color: var(--orange); min-height: 18px; }
+.pose-table-scroll { overflow-x: auto; margin: 20px -18px 15px; }
+.pose-table { border-collapse: collapse; width: 100%; text-align: right; white-space: nowrap; font: 11px "SFMono-Regular", Consolas, monospace; }
+.pose-table caption { text-align: left; padding: 0 18px 12px; white-space: normal; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.pose-table th, .pose-table td { padding: 12px 10px; border-block: 1px solid var(--line); }
+.pose-table thead th { color: var(--muted); background: var(--panel-deep); font-size: 9px; }
+.pose-table th:first-child { text-align: left; padding-left: 18px; }
+.pose-table tbody tr:nth-child(even) { background: var(--panel-deep); }
+.pose-mismatch { color: var(--red); font-weight: bold; }
+.pose-torque-summary { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.pose-command-form { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 18px; }
+.pose-command-form > div:first-child { flex-basis: 100%; }
+.pose-command-form h3 { margin: 8px 0; font: 500 23px Georgia, serif; }
+.pose-command-form .pose-confirm { display: flex; align-items: center; flex-basis: 100%; line-height: 1.5; }
+.pose-command-result { display: block; padding: 14px; background: var(--panel-deep); border-left: 3px solid var(--orange); font: 11px/1.6 "SFMono-Regular", Consolas, monospace; overflow-wrap: anywhere; }
+@media (max-width: 690px) {
+  .pose-start-controls > *, .pose-command-form > label, .pose-command-form > button { width: 100%; }
+  .utility-tabs button { flex: 1; padding: 12px 6px; font-size: 10px; }
+}
 
 @keyframes arrive { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }

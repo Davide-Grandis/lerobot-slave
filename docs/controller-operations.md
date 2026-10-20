@@ -74,16 +74,14 @@ teleoperation with the follower's measured positions:
 At about 10 Hz it displays, per joint, the leader action value (the normalized
 value the teleoperation loop sends), follower readback, their difference, raw
 servo counts, servo MIN/MAX ticks, and torque-enabled status. By default it
-asks you to type `RELEASE`, then disables torque only on servos currently
-enabled. This can let an arm sag, so physically support both arms before
-confirming. It never automatically enables torque or sends position goals;
-those require explicit `TE` or set commands. Use `--keep-torque` to preserve
-torque at startup; enabled servos may resist manual movement. Stop it with
-Ctrl-C. Close the Operator UI or any other process using the leader USB port
-first. It also requires the Pi to have the `/monitor` WSS endpoint and no
-active control session.
+preserves the existing torque state and sends no position goals at startup.
+Torque changes and movement require explicit commands. Disabling torque may
+let a joint sag; support it before using `TD`. Stop it with Ctrl-C or `q`.
+Close the Operator UI or any other process using the leader USB port first.
+It also requires the Pi to have the `/monitor` WSS endpoint and no active
+control session.
 
-The monitor accepts single-follower-joint commands:
+The monitor accepts follower-joint commands:
 
 ```text
 J1 T823       # raw encoder ticks, J1-J6
@@ -91,13 +89,15 @@ J3 D-120.34   # degrees, J1-J5 only
 J6 %95.20     # normalized 0-100 gripper value
 J1 TE         # enable torque on J1, holding its current position first
 J5 TD         # disable torque on J5
+J* TE         # enable torque on all six joints
+J* TD         # disable torque on all six joints
 ```
 
 Position commands are checked against the servo's raw MIN/MAX limits and
 executed one joint at a time in at most 2.5-unit normalized steps at reduced
 speed. They require torque enabled on that joint; use `TE` explicitly first.
-`TD` may let a joint drop, so support it. The leader remains read-only; these
-commands affect only the follower.
+`TD` may let a joint drop, so support it. `J* TD` releases all six joints. The
+leader remains read-only; these commands affect only the follower.
 
 ### Servo limits and SDK-style home
 

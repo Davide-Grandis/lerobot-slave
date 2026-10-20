@@ -280,7 +280,7 @@ def create_app(
                 or time.time() - video_frame["received_at"] > VIDEO_STALE_S
             ):
                 raise HTTPException(status_code=409, detail="wait for a live follower camera before starting")
-        if pose_monitor.running or (task is not None and not task.done()):
+        if estop_latched or pose_monitor.running or (task is not None and not task.done()):
             raise HTTPException(status_code=409, detail="another hardware session is running")
         stop_event = asyncio.Event()
         last_heartbeat = time.monotonic()
@@ -345,6 +345,7 @@ def create_app(
         nonlocal stop_reason, estop_latched
         require_origin(request)
         estop_latched = True
+        pose_monitor.stop()
         stop_reason = "Software stop requested. Inspect the robot before re-arming."
         if runtime is not None and task is not None and not task.done():
             runtime.stop_event.set()
@@ -367,7 +368,7 @@ def create_app(
             body = {}
         if not isinstance(body, dict) or body.get("confirmation") != "RE-ARM":
             raise HTTPException(status_code=400, detail="type RE-ARM after inspecting the robot")
-        if task is not None and not task.done():
+        if pose_monitor.running or (task is not None and not task.done()):
             raise HTTPException(status_code=409, detail="stop the current session before re-arming")
         estop_latched = False
         status.update(state="idle", error=None, estop_latched=False)

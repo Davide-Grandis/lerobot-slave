@@ -7,9 +7,10 @@ from cf_robot.pose_compare_client import is_follower_sample, parse_pose_command
 from cf_robot.protocol import JOINTS
 from cf_robot.pose_monitor import (
     execute_pose_command,
-    prepare_bus_torque,
+    report_bus_torque,
     stream_follower_pose,
     stream_leader_pose,
+    validate_pose_command,
 )
 from cf_robot.servo_maintenance import read_servo_limits
 
@@ -164,23 +165,16 @@ class PoseMonitorTests(unittest.TestCase):
     def test_follower_stream_reads_observation_without_configuring_or_writing(self):
         self._check_stream(stream_follower_pose, "cf_robot.pose_monitor.make_follower")
 
-    def test_release_mode_disables_only_torque_that_was_enabled(self):
+    def test_startup_torque_report_does_not_change_any_servo(self):
         arm = FakeArm()
         arm.bus.torque["gripper"] = False
         messages = []
 
-        prepare_bus_torque(arm.bus, "follower", True, messages.append)
+        report_bus_torque(arm.bus, "follower", messages.append)
 
-        self.assertEqual(
-            arm.bus.writes,
-            [(("Torque_Enable", "shoulder_pan", 0), {"normalize": False, "num_retry": 2}),
-             (("Torque_Enable", "shoulder_lift", 0), {"normalize": False, "num_retry": 2}),
-             (("Torque_Enable", "elbow_flex", 0), {"normalize": False, "num_retry": 2}),
-             (("Torque_Enable", "wrist_flex", 0), {"normalize": False, "num_retry": 2}),
-             (("Torque_Enable", "wrist_roll", 0), {"normalize": False, "num_retry": 2})],
-        )
+        self.assertEqual(arm.bus.writes, [])
         self.assertTrue(messages[0]["before"]["shoulder_pan.pos"])
-        self.assertFalse(messages[0]["after"]["shoulder_pan.pos"])
+        self.assertEqual(messages[0]["before"], messages[0]["after"])
         self.assertFalse(messages[0]["before"]["gripper.pos"])
 
     def test_client_accepts_only_follower_samples(self):
@@ -214,8 +208,16 @@ class PoseMonitorTests(unittest.TestCase):
         self.assertFalse(
             parse_pose_command("J5 TD", 5)["message"]["enabled"]
         )
+        self.assertEqual(
+            parse_pose_command("J* TE", 6)["message"]["joint_id"],
+            "*",
+        )
+        self.assertEqual(
+            parse_pose_command("J* TD", 7)["message"]["enabled"],
+            False,
+        )
         with self.assertRaises(ValueError):
-            parse_pose_command("J6 D10", 6)
+            parse_pose_command("J6 D10", 8)
 
     def test_manual_joint_command_uses_one_joint_and_restores_speed(self):
         robot = FakeArm()
@@ -272,7 +274,41 @@ class PoseMonitorTests(unittest.TestCase):
                 ("Torque_Enable", "wrist_roll", 1),
             ],
         )
-        self.assertTrue(results[-1]["torque_enabled"])
+        self.assertTrue(results[-1]["joint_results"][0]["torque_enabled"])
+
+    def test_all_joint_torque_command_confirms_each_named_joint(self):
+        robot = FakeArm()
+        results = []
+        command = validate_pose_command(
+            {
+                "version": 1,
+                "type": "command",
+                "command_id": 9,
+                "joint_id": "*",
+                "mode": "torque",
+                "enabled": False,
+            }
+        )
+        execute_pose_command(
+            robot,
+            read_servo_limits(robot.bus),
+            command,
+            threading.Event(),
+            results.append,
+        )
+
+        final = results[-1]
+        self.assertEqual(final["state"], "succeeded")
+        self.assertEqual(len(final["joint_results"]), 6)
+        self.assertEqual(
+            final["joint_results"][-1],
+            {
+                "joint_id": 6,
+                "joint_name": "Gripper",
+                "torque_enabled": False,
+                "message": "torque released",
+            },
+        )
 
 
 if __name__ == "__main__":

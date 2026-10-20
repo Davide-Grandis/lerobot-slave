@@ -20,7 +20,7 @@ from websockets.exceptions import WebSocketException
 from cf_robot.auth import access_headers
 from cf_robot.hardware import joint_positions, make_leader
 from cf_robot.protocol import JOINTS, VERSION
-from cf_robot.pose_monitor import prepare_bus_torque
+from cf_robot.pose_monitor import report_bus_torque
 from cf_robot.servo_maintenance import read_servo_limits
 
 SAMPLE_INTERVAL_S = 0.1
@@ -44,7 +44,7 @@ def parse_pose_command(line, command_id):
     if text.lower() in ("q", "quit", "exit"):
         return {"kind": "stop"}
 
-    match = re.fullmatch(r"J([1-6])\s+(TE|TD)", text, re.IGNORECASE)
+    match = re.fullmatch(r"J(\*|[1-6])\s+(TE|TD)", text, re.IGNORECASE)
     if match:
         return {
             "kind": "command",
@@ -52,7 +52,7 @@ def parse_pose_command(line, command_id):
                 "version": VERSION,
                 "type": "command",
                 "command_id": command_id,
-                "joint_id": int(match.group(1)),
+                "joint_id": match.group(1) if match.group(1) == "*" else int(match.group(1)),
                 "mode": "torque",
                 "enabled": match.group(2).upper() == "TE",
             },
@@ -110,7 +110,7 @@ def parse_pose_command(line, command_id):
         }
 
     raise ValueError(
-        "use J1-J6 T<ticks>, J1-J5 D<degrees>, J6 %<0-100>, or J1-J6 TE/TD"
+        "use J1-J6 T<ticks>, J1-J5 D<degrees>, J6 %<0-100>, or J1-J6/J* TE/TD"
     )
 
 
@@ -155,7 +155,7 @@ class TerminalInput:
         sys.stdout.flush()
 
 
-def _read_leader(leader, loop, samples, stop, release_torque):
+def _read_leader(leader, loop, samples, stop):
     bus = leader.bus
     connected = False
 
@@ -173,7 +173,7 @@ def _read_leader(leader, loop, samples, stop, release_torque):
         bus.connect()
         connected = True
         limits = read_servo_limits(bus)
-        prepare_bus_torque(bus, "leader", release_torque, publish)
+        report_bus_torque(bus, "leader", publish)
         while not stop.is_set():
             started = time.monotonic()
             action = joint_positions(leader.get_action())
@@ -211,10 +211,12 @@ def _read_leader(leader, loop, samples, stop, release_torque):
 def _torque_states(states):
     if not states:
         return "not read"
-    return ", ".join(
-        f"{joint.removesuffix('.pos')}={'ON' if states[joint] else 'off'}"
-        for joint in JOINTS
-    )
+    enabled = [
+        f"J{index + 1}"
+        for index, joint in enumerate(JOINTS)
+        if states.get(joint, False)
+    ]
+    return ",".join(enabled) if enabled else "none"
 
 
 def _render(
@@ -228,23 +230,19 @@ def _render(
     if sys.stdout.isatty():
         sys.stdout.write("\033[H\033[J")
     print("ARMS MONITOR -- Ctrl-C or q to stop")
-    print(f"Torque before -> after: leader: {_torque_states(leader_torque and leader_torque['before'])}")
-    print(f"                         follower: {_torque_states(follower_torque and follower_torque['before'])}")
     print(
-        "Current torque: leader "
-        f"{_torque_states(leader_sample['torque'])}; follower "
-        f"{_torque_states(follower_sample['torque'])}"
+        "Torque at start: "
+        f"leader={_torque_states(leader_torque and leader_torque['before'])} "
+        f"follower={_torque_states(follower_torque and follower_torque['before'])}"
     )
     print(
-        "Units: J1-J5 values/delta=degrees; J6=0-100 normalized; "
-        "raw counts and MIN/MAX=encoder ticks; torque 1=on, 0=off."
+        "Torque now: "
+        f"leader={_torque_states(leader_sample['torque'])} "
+        f"follower={_torque_states(follower_sample['torque'])}"
     )
-    print("Leader values are the normalized action values teleoperation sends.")
-    print(
-        f"{'Joint':24} {'Unit':>6} {'Leader':>9} {'Follower':>9} {'Delta':>8} "
-        f"{'L raw':>6} {'L MIN..MAX':>13} {'F raw':>6} {'F MIN..MAX':>13} {'L T':>4} {'F T':>4}"
-    )
-    for joint in JOINTS:
+    print("Units: J1-J5 deg; J6 0-100; raw counts/MIN/MAX are ticks.")
+    print("Leader values are the normalized target values teleoperation sends.")
+    for index, joint in enumerate(JOINTS, start=1):
         leader_value = leader_sample["values"][joint]
         follower_value = follower_sample["values"][joint]
         delta = leader_value - follower_value
@@ -254,29 +252,29 @@ def _render(
         leader_limits = leader_sample["limits"][joint]
         follower_limits = follower_sample["limits"][joint]
         print(
-            f"{joint:24} {unit:>6} {leader_value:9.2f} {follower_value:9.2f} "
-            f"{delta:+8.2f} {leader_raw:6d} "
-            f"{leader_limits['min']:5d}..{leader_limits['max']:<5d} {follower_raw:6d} "
-            f"{follower_limits['min']:5d}..{follower_limits['max']:<5d} "
-            f"{int(leader_sample['torque'][joint]):4d} {int(follower_sample['torque'][joint]):4d}"
+            f"J{index} {joint.removesuffix('.pos'):13} "
+            f"L {leader_value:7.2f} F {follower_value:7.2f} "
+            f"d {delta:+7.2f} {unit}"
+        )
+        print(
+            f"   raw: L {leader_raw:4d} [{leader_limits['min']}..{leader_limits['max']}] "
+            f"F {follower_raw:4d} [{follower_limits['min']}..{follower_limits['max']}] "
+            f"torque {int(leader_sample['torque'][joint])}/{int(follower_sample['torque'][joint])}"
         )
     print(
         f"Samples: leader={leader_sample['sampled_at']:.3f}, "
         f"follower={follower_sample['sampled_at']:.3f}"
     )
-    print(
-        "J1=shoulder_pan J2=shoulder_lift J3=elbow_flex J4=wrist_flex "
-        "J5=wrist_roll J6=gripper"
-    )
-    print("Follower commands: J1-J6 T<ticks> | J1-J5 D<degrees> | J6 %<0-100> | J1-J6 TE/TD | help | q")
-    print("TE sets the current position as the hold target; TD releases torque and may let the joint sag.")
+    print("Follower: J1-J6 T<ticks>; J1-J5 D<degrees>; J6 %<0-100>")
+    print("          J1-J6 or J* TE/TD (TD may sag); help; q")
+    print("TE holds present position; TD releases torque and may drop the joint.")
     if status_message:
         print(status_message)
     print(f"> {command_buffer}", end="")
     sys.stdout.flush()
 
 
-async def monitor_poses(url, port, arm_id, release_torque):
+async def monitor_poses(url, port, arm_id):
     leader = make_leader(port, arm_id)
     stop = threading.Event()
     samples = asyncio.Queue(maxsize=4)
@@ -290,37 +288,18 @@ async def monitor_poses(url, port, arm_id, release_torque):
         ping_timeout=5,
         max_size=2 * 1024 * 1024,
     ) as socket:
-        await socket.send(
-            json.dumps(
-                {
-                    "version": VERSION,
-                    "type": "start",
-                    "release_torque": release_torque,
-                }
-            )
-        )
+        await socket.send(json.dumps({"version": VERSION, "type": "start"}))
         started = json.loads(await socket.recv())
         if started.get("type") == "error":
             raise RuntimeError(started.get("message", "Pi rejected pose monitoring"))
-        if started.get("type") == "torque_release_confirmation_required":
-            await socket.send(
-                json.dumps({"version": VERSION, "type": "confirm_torque_release"})
-            )
-            started = json.loads(await socket.recv())
-            if started.get("type") == "error":
-                raise RuntimeError(started.get("message", "Pi rejected torque release"))
-        if started.get("type") == "monitor_cancelled":
-            raise RuntimeError(started.get("reason", "torque release was cancelled"))
         if started.get("type") != "monitor_started":
             raise RuntimeError("Pi returned an invalid pose-monitor response")
-        if started.get("release_torque") != release_torque:
-            raise RuntimeError("Pi pose-monitor torque mode did not match the request")
 
         loop = asyncio.get_running_loop()
         terminal = TerminalInput(loop)
         leader_thread = threading.Thread(
             target=_read_leader,
-            args=(leader, loop, samples, stop, release_torque),
+            args=(leader, loop, samples, stop),
             name="leader-pose-monitor",
             daemon=True,
         )
@@ -371,10 +350,26 @@ async def monitor_poses(url, port, arm_id, release_torque):
                     elif message_type == "monitor_finished":
                         server_finished = True
                         return
+                    elif message_type == "command_result" and message.get("joint_results"):
+                        status_message = " | ".join(
+                            f"{result['joint_name']} (J{result['joint_id']}): "
+                            f"{result['message']}"
+                            for result in message["joint_results"]
+                        )
                     elif message_type in ("command_queued", "command_progress", "command_result"):
                         joint_id = message.get("joint_id")
+                        if isinstance(joint_id, int) and 1 <= joint_id <= len(JOINTS):
+                            joint_name = (
+                                JOINTS[joint_id - 1]
+                                .removesuffix(".pos")
+                                .replace("_", " ")
+                                .title()
+                            )
+                            joint_label = f"{joint_name} (J{joint_id})"
+                        else:
+                            joint_label = f"J{joint_id}"
                         state = message.get("state", message_type)
-                        status_message = f"J{joint_id}: {state}"
+                        status_message = f"{joint_label}: {state}"
                         if message.get("message"):
                             status_message += f" - {message['message']}"
                         elif message_type == "command_progress":
@@ -412,7 +407,8 @@ async def monitor_poses(url, port, arm_id, release_torque):
                             if parsed["kind"] == "help":
                                 status_message = (
                                     "J1 pan J2 lift J3 elbow J4 wrist-flex J5 wrist-roll J6 gripper; "
-                                    "T=ticks, D=degrees (J1-J5), %=gripper (J6), TE/TD=torque."
+                                    "T=ticks, D=degrees (J1-J5), %=gripper (J6), "
+                                    "J1-J6 or J* TE/TD=torque."
                                 )
                             elif parsed["kind"] == "stop":
                                 await socket.send(
@@ -484,36 +480,20 @@ def main():
     )
     parser.add_argument("--port", required=True, help="Local leader serial device")
     parser.add_argument("--arm-id", default="so101_leader", help="Leader calibration ID")
-    parser.add_argument(
-        "--keep-torque",
-        action="store_true",
-        help="read torque state without disabling enabled servos",
-    )
     args = parser.parse_args()
     if not args.url:
         parser.error("pass --url or set CF_ROBOT_CONTROL_URL in controller.env")
 
-    release_torque = not args.keep_torque
-    if release_torque:
-        print(
-            "The monitor reads both arms and sends no position goals. It will "
-            "disable torque only on servos currently enabled; the arms may sag."
-        )
-        if input("Physically support both arms and type RELEASE to proceed: ").strip() != "RELEASE":
-            print("Pose monitoring cancelled; no torque state was changed.")
-            return
-    else:
-        print(
-            "Read-only mode: torque state will not be changed. Manually moving "
-            "an enabled servo may meet resistance."
-        )
+    print(
+        "Startup preserves torque on both arms. Use J1-J6 TE/TD or J* TE/TD "
+        "to change it explicitly; TD may let the arm sag."
+    )
     try:
         asyncio.run(
             monitor_poses(
                 monitor_url(args.url),
                 args.port,
                 args.arm_id,
-                release_torque,
             )
         )
     except KeyboardInterrupt:

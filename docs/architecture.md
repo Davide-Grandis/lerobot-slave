@@ -92,10 +92,9 @@ the Pi.
   `/var/lib/cf-robot`, and requires a separate confirmation before the fixed
   SDK-style home pose. It accepts no client-supplied serial path or raw target.
 - `/monitor` streams normalized follower readback, raw servo counts, servo
-  limits, and torque state. It does not configure motors. After explicit
-  confirmation it can disable torque on enabled servos; `--keep-torque`
-  preserves their state. It accepts only validated per-joint tick/degree/
-  gripper-percent targets and `TE`/`TD` torque commands, with configured
+  limits, and torque state without changing torque at startup. It accepts only
+  validated per-joint tick/degree/gripper-percent targets and explicit `TE`/
+  `TD` torque commands, including all-joint `J* TE`/`J* TD`, with configured
   limits and bounded single-joint steps. It blocks control, calibration,
   maintenance, and update operations while connected.
 

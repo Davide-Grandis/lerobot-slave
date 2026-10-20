@@ -225,14 +225,12 @@ class OriginTests(unittest.TestCase):
 
     def test_pose_monitor_wss_streams_read_only_follower_samples(self):
         def fake_monitor(
-            port, arm_id, stop, publish, release_torque, commands, command_busy
+            port, arm_id, stop, publish, commands, command_busy
         ):
             publish({
                 "type": "follower_torque",
-                "before": {joint: True for joint in JOINTS},
-                "after": {joint: False for joint in JOINTS}
-                if release_torque
-                else {joint: True for joint in JOINTS},
+                "before": {joint: index % 2 == 0 for index, joint in enumerate(JOINTS)},
+                "after": {joint: index % 2 == 0 for index, joint in enumerate(JOINTS)},
             })
             publish(
                 {
@@ -240,7 +238,9 @@ class OriginTests(unittest.TestCase):
                     "side": "follower",
                     "values": {joint: 1.0 for joint in JOINTS},
                     "raw": {joint: 2000 for joint in JOINTS},
-                    "torque": {joint: not release_torque for joint in JOINTS},
+                    "torque": {
+                        joint: index % 2 == 0 for index, joint in enumerate(JOINTS)
+                    },
                     "sampled_at": 1.0,
                 }
             )
@@ -250,14 +250,36 @@ class OriginTests(unittest.TestCase):
                 except queue.Empty:
                     continue
                 command_busy.set()
-                publish(
-                    {
-                        "type": "command_result",
-                        "command_id": command["command_id"],
-                        "joint_id": command["joint_id"],
-                        "state": "succeeded",
-                    }
-                )
+                if command.get("mode") == "torque" and command.get("joint_id") == "*":
+                    joint_results = [
+                        {
+                            "joint_id": index,
+                            "joint_name": joint.removesuffix(".pos").replace("_", " ").title(),
+                            "torque_enabled": command["enabled"],
+                            "message": (
+                                "torque enabled" if command["enabled"] else "torque released"
+                            ),
+                        }
+                        for index, joint in enumerate(JOINTS, start=1)
+                    ]
+                    publish(
+                        {
+                            "type": "command_result",
+                            "command_id": command["command_id"],
+                            "joint_id": "*",
+                            "state": "succeeded",
+                            "joint_results": joint_results,
+                        }
+                    )
+                else:
+                    publish(
+                        {
+                            "type": "command_result",
+                            "command_id": command["command_id"],
+                            "joint_id": command["joint_id"],
+                            "state": "succeeded",
+                        }
+                    )
                 command_busy.clear()
 
         with patch("cf_robot.follower.stream_follower_pose", side_effect=fake_monitor):
@@ -270,22 +292,14 @@ class OriginTests(unittest.TestCase):
             with TestClient(app) as client:
                 with client.websocket_connect("/monitor", headers=self.headers) as socket:
                     socket.send_json(
-                        {"version": 1, "type": "start", "release_torque": True}
-                    )
-                    self.assertEqual(
-                        socket.receive_json()["type"],
-                        "torque_release_confirmation_required",
-                    )
-                    socket.send_json(
-                        {"version": 1, "type": "confirm_torque_release"}
+                        {"version": 1, "type": "start"}
                     )
                     started = socket.receive_json()
                     self.assertEqual(started["type"], "monitor_started")
-                    self.assertTrue(started["release_torque"])
                     torque = socket.receive_json()
                     self.assertEqual(torque["type"], "follower_torque")
-                    self.assertTrue(torque["before"]["gripper.pos"])
-                    self.assertFalse(torque["after"]["gripper.pos"])
+                    self.assertEqual(torque["before"], torque["after"])
+                    self.assertTrue(torque["after"]["shoulder_pan.pos"])
                     sample = socket.receive_json()
                     self.assertEqual(sample["type"], "pose_sample")
                     self.assertEqual(sample["side"], "follower")
@@ -305,6 +319,23 @@ class OriginTests(unittest.TestCase):
                     result = socket.receive_json()
                     self.assertEqual(result["type"], "command_result")
                     self.assertEqual(result["joint_id"], 3)
+                    socket.send_json(
+                        {
+                            "version": 1,
+                            "type": "command",
+                            "command_id": 2,
+                            "joint_id": "*",
+                            "mode": "torque",
+                            "enabled": False,
+                        }
+                    )
+                    self.assertEqual(socket.receive_json()["type"], "command_queued")
+                    all_torque_result = socket.receive_json()
+                    self.assertEqual(len(all_torque_result["joint_results"]), 6)
+                    self.assertEqual(
+                        all_torque_result["joint_results"][-1]["joint_name"],
+                        "Gripper",
+                    )
                     socket.send_json({"version": 1, "type": "stop"})
                     self.assertEqual(socket.receive_json()["type"], "monitor_finished")
                 self.assertFalse(client.get("/health").json()["monitor_busy"])

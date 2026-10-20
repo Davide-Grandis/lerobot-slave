@@ -642,8 +642,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             not isinstance(request, dict)
             or request.get("version") != VERSION
             or request.get("type") != "start"
-            or set(request) != {"version", "type", "release_torque"}
-            or not isinstance(request.get("release_torque"), bool)
+            or set(request) != {"version", "type"}
         ):
             await reject("unsupported pose-monitor request")
             return
@@ -659,37 +658,6 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
         if control_lock.locked():
             await reject("stop the follower control session before monitoring")
             return
-
-        release_torque = request["release_torque"]
-        if release_torque:
-            await ws.send_json({"type": "torque_release_confirmation_required"})
-            try:
-                confirmation = json.loads(
-                    await asyncio.wait_for(ws.receive_text(), timeout=60)
-                )
-            except asyncio.TimeoutError:
-                await ws.send_json({"type": "monitor_cancelled", "reason": "confirmation timed out"})
-                await ws.close()
-                return
-            except json.JSONDecodeError:
-                await reject("invalid torque-release confirmation")
-                return
-            except WebSocketDisconnect:
-                return
-            if confirmation != {"version": VERSION, "type": "confirm_torque_release"}:
-                await ws.send_json({"type": "monitor_cancelled"})
-                await ws.close()
-                return
-            if (
-                monitor_requested
-                or maintenance_requested
-                or calibration_requested
-                or update_requested
-                or UPDATE_REQUEST.exists()
-                or control_lock.locked()
-            ):
-                await reject("follower became busy; retry when no session is active")
-                return
 
         monitor_requested = True
         stop = threading.Event()
@@ -713,7 +681,6 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                     arm_id,
                     stop,
                     publish,
-                    release_torque,
                     commands,
                     command_busy,
                 )
@@ -723,7 +690,6 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                     "type": "monitor_started",
                     "version": VERSION,
                     "interval_s": 0.1,
-                    "release_torque": release_torque,
                 }
             )
             receive_task = asyncio.create_task(ws.receive_text())
