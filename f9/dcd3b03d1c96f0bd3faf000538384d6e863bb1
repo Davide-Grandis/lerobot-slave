@@ -1,0 +1,19 @@
+src/cf_robot/follower.py
+  s_93e8a4658813d1::t_d32e997b4c90b2 23,29,57,69,78,82,192,220,270,475,618-746
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f9dcd3b03d1c96f0bd3faf000538384d6e863bb1",
+  "prompts": {},
+  "sessions": {
+    "s_93e8a4658813d1": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "troubled-jackfruit",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
