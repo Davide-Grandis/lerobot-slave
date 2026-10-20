@@ -226,7 +226,8 @@ class OriginTests(unittest.TestCase):
         def fake_monitor(port, arm_id, stop, publish):
             publish(
                 {
-                    "type": "follower_sample",
+                    "type": "pose_sample",
+                    "side": "follower",
                     "values": {joint: 1.0 for joint in JOINTS},
                     "raw": {joint: 2000 for joint in JOINTS},
                     "sampled_at": 1.0,
@@ -246,7 +247,8 @@ class OriginTests(unittest.TestCase):
                     socket.send_json({"version": 1, "type": "start"})
                     self.assertEqual(socket.receive_json()["type"], "monitor_started")
                     sample = socket.receive_json()
-                    self.assertEqual(sample["type"], "follower_sample")
+                    self.assertEqual(sample["type"], "pose_sample")
+                    self.assertEqual(sample["side"], "follower")
                     self.assertEqual(sample["values"]["wrist_flex.pos"], 1.0)
                     self.assertTrue(client.get("/health").json()["monitor_busy"])
                     socket.send_json({"version": 1, "type": "stop"})

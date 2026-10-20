@@ -27,6 +27,10 @@ def monitor_url(control_url):
     return urlunsplit(("wss", parsed.netloc, "/monitor", "", ""))
 
 
+def is_follower_sample(message):
+    return message.get("type") == "pose_sample" and message.get("side") == "follower"
+
+
 def _read_leader(leader, loop, samples, stop):
     bus = leader.bus
     connected = False
@@ -142,7 +146,7 @@ async def monitor_poses(url, port, arm_id):
                     message_type = message.get("type")
                     if message_type == "error":
                         raise RuntimeError(message.get("message", "pose monitor failed"))
-                    if message_type == "follower_sample":
+                    if is_follower_sample(message):
                         follower_sample = message
                     elif message_type == "monitor_finished":
                         return

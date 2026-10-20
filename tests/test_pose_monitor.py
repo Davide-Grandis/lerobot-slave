@@ -2,6 +2,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from cf_robot.pose_compare_client import is_follower_sample
 from cf_robot.protocol import JOINTS
 from cf_robot.pose_monitor import stream_follower_pose, stream_leader_pose
 
@@ -72,6 +73,18 @@ class PoseMonitorTests(unittest.TestCase):
 
     def test_follower_stream_reads_observation_without_configuring_or_writing(self):
         self._check_stream(stream_follower_pose, "cf_robot.pose_monitor.make_follower")
+
+    def test_client_accepts_only_follower_samples(self):
+        self.assertTrue(
+            is_follower_sample(
+                {"type": "pose_sample", "side": "follower"}
+            )
+        )
+        self.assertFalse(
+            is_follower_sample(
+                {"type": "pose_sample", "side": "leader"}
+            )
+        )
 
 
 if __name__ == "__main__":
