@@ -20,11 +20,13 @@ import uvicorn
 from cf_robot.control import FollowerSession
 from cf_robot.hardware import make_camera, make_follower
 from cf_robot.protocol import VERSION, validate_command
+from cf_robot.pose_monitor import stream_follower_pose
 from cf_robot.servo_maintenance import (
     calculate_home_positions,
     move_to_home,
     read_limits_and_pose,
 )
+from cf_robot.pose_monitor import stream_follower_pose
 
 LOG = logging.getLogger(__name__)
 UPDATE_REQUEST = Path("/var/lib/cf-robot/update-request")
@@ -52,6 +54,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
     update_requested = UPDATE_REQUEST.exists()
     calibration_requested = False
     maintenance_requested = False
+    monitor_requested = False
     follower_factory = factory or (lambda: make_follower(port, arm_id))
     camera_factory = camera_factory or (lambda: make_camera(camera_device, width, height, video_fps))
 
@@ -63,6 +66,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             "control_busy": control_lock.locked(),
             "calibration_busy": calibration_requested,
             "maintenance_busy": maintenance_requested,
+            "monitor_busy": monitor_requested,
             "update": read_update_status(),
         }
 
@@ -71,11 +75,11 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
         if not hmac.compare_digest(ws.headers.get("x-cf-robot-key", ""), origin_key):
             await ws.close(code=1008)
             return
-        if update_requested or calibration_requested or maintenance_requested:
+        if update_requested or calibration_requested or maintenance_requested or monitor_requested:
             await ws.close(code=1013, reason="follower maintenance in progress")
             return
         await ws.accept()
-        if update_requested or calibration_requested or maintenance_requested:
+        if update_requested or calibration_requested or maintenance_requested or monitor_requested:
             await ws.close(code=1013, reason="follower maintenance in progress")
             return
         if control_lock.locked():
@@ -185,7 +189,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
         if update_requested or UPDATE_REQUEST.exists():
             await reject("an update is already queued")
             return
-        if calibration_requested or maintenance_requested:
+        if calibration_requested or maintenance_requested or monitor_requested:
             await reject("follower maintenance is in progress")
             return
         if control_lock.locked() or video_lock.locked():
@@ -213,6 +217,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                 update_requested
                 or calibration_requested
                 or maintenance_requested
+                or monitor_requested
                 or UPDATE_REQUEST.exists()
                 or control_lock.locked()
                 or video_lock.locked()
@@ -262,6 +267,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
         if (
             calibration_requested
             or maintenance_requested
+            or monitor_requested
             or update_requested
             or UPDATE_REQUEST.exists()
         ):
@@ -466,6 +472,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
         if (
             maintenance_requested
             or calibration_requested
+            or monitor_requested
             or update_requested
             or UPDATE_REQUEST.exists()
         ):
@@ -603,6 +610,135 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                 with contextlib.suppress(asyncio.CancelledError):
                     await progress_task
             maintenance_requested = False
+            try:
+                await ws.close()
+            except (RuntimeError, OSError, WebSocketDisconnect):
+                pass
+
+    @app.websocket("/monitor")
+    async def monitor(ws: WebSocket):
+        nonlocal monitor_requested
+        if not hmac.compare_digest(ws.headers.get("x-cf-robot-key", ""), origin_key):
+            await ws.close(code=1008)
+            return
+        await ws.accept()
+
+        async def reject(message):
+            await ws.send_json({"type": "error", "message": message})
+            await ws.close(code=1008)
+
+        try:
+            raw = await asyncio.wait_for(ws.receive_text(), timeout=10)
+            request = json.loads(raw)
+        except asyncio.TimeoutError:
+            await reject("timed out waiting for pose-monitor request")
+            return
+        except json.JSONDecodeError:
+            await reject("invalid pose-monitor request")
+            return
+        except WebSocketDisconnect:
+            return
+        if request != {"version": VERSION, "type": "start"}:
+            await reject("unsupported pose-monitor request")
+            return
+        if (
+            monitor_requested
+            or maintenance_requested
+            or calibration_requested
+            or update_requested
+            or UPDATE_REQUEST.exists()
+        ):
+            await reject("follower is in another session")
+            return
+        if control_lock.locked():
+            await reject("stop the follower control session before monitoring")
+            return
+
+        monitor_requested = True
+        stop = threading.Event()
+        client_disconnected = False
+        worker_task = None
+        receive_task = None
+        sample_task = None
+        try:
+            loop = asyncio.get_running_loop()
+            samples = asyncio.Queue()
+
+            def publish(sample):
+                loop.call_soon_threadsafe(samples.put_nowait, sample)
+
+            worker_task = asyncio.create_task(
+                asyncio.to_thread(stream_follower_pose, port, arm_id, stop, publish)
+            )
+            await ws.send_json(
+                {
+                    "type": "monitor_started",
+                    "version": VERSION,
+                    "interval_s": 0.1,
+                }
+            )
+            receive_task = asyncio.create_task(ws.receive_text())
+            sample_task = asyncio.create_task(samples.get())
+            while not worker_task.done():
+                done, _ = await asyncio.wait(
+                    {worker_task, receive_task, sample_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if sample_task in done:
+                    await ws.send_json(sample_task.result())
+                    sample_task = asyncio.create_task(samples.get())
+                if receive_task in done:
+                    try:
+                        message = json.loads(receive_task.result())
+                    except json.JSONDecodeError:
+                        await ws.send_json({"type": "error", "message": "invalid pose-monitor message"})
+                        stop.set()
+                        receive_task = asyncio.create_task(ws.receive_text())
+                        continue
+                    except WebSocketDisconnect:
+                        client_disconnected = True
+                        stop.set()
+                        break
+                    if message != {"version": VERSION, "type": "stop"}:
+                        await ws.send_json({"type": "error", "message": "only stop is accepted while monitoring"})
+                        stop.set()
+                        receive_task = asyncio.create_task(ws.receive_text())
+                        continue
+                    stop.set()
+                    receive_task = asyncio.create_task(ws.receive_text())
+
+            try:
+                await worker_task
+            except Exception as exc:
+                if not client_disconnected:
+                    await ws.send_json({"type": "error", "message": str(exc)})
+            if not client_disconnected:
+                await ws.send_json({"type": "monitor_finished"})
+        except WebSocketDisconnect:
+            client_disconnected = True
+            stop.set()
+            if worker_task is not None:
+                with contextlib.suppress(Exception):
+                    await worker_task
+        except Exception:
+            stop.set()
+            if worker_task is not None:
+                with contextlib.suppress(Exception):
+                    await worker_task
+            LOG.exception("Follower pose monitor failed")
+            if not client_disconnected:
+                try:
+                    await ws.send_json({"type": "error", "message": "pose monitor failed"})
+                except (RuntimeError, OSError, WebSocketDisconnect):
+                    pass
+        finally:
+            stop.set()
+            for task in (receive_task, sample_task):
+                if task is not None and not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
+                        await task
+            monitor_requested = False
             try:
                 await ws.close()
             except (RuntimeError, OSError, WebSocketDisconnect):

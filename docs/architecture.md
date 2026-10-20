@@ -30,7 +30,7 @@ the Pi.
 | --- | --- |
 | [`src/cf_robot/hardware.py`](../src/cf_robot/hardware.py) | Construct LeRobot `SO101Leader`, `SO101Follower`, and `OpenCVCamera`; extract joint observations. |
 | [`src/cf_robot/leader.py`](../src/cf_robot/leader.py) | Connect the laptop leader without interactive calibration; send actions at a configured maximum rate (default 30 fps); stop rather than auto-reconnect after failure. |
-| [`src/cf_robot/follower.py`](../src/cf_robot/follower.py) | Serve `/health`, `/control`, `/video`, `/update`, `/calibrate`, and `/maintenance`; authenticate WebSocket upgrades; allow one control and one video connection. |
+| [`src/cf_robot/follower.py`](../src/cf_robot/follower.py) | Serve `/health`, `/control`, `/video`, `/update`, `/calibrate`, `/maintenance`, and `/monitor`; authenticate WebSocket upgrades; allow one control and one video connection. |
 | [`src/cf_robot/control.py`](../src/cf_robot/control.py) | Own the follower in one thread; retain only the latest target; refresh measured servo positions; check command gap and joint jumps; disconnect on stop/error. |
 | [`src/cf_robot/protocol.py`](../src/cf_robot/protocol.py) | Define protocol version 1, joint names, action validation, sequence and timestamp checks. |
 | [`src/cf_robot/auth.py`](../src/cf_robot/auth.py) | Validate the remote URL and attach Access and origin-key headers from the laptop environment. |
@@ -91,11 +91,15 @@ the Pi.
   It reads raw MIN/MAX registers through LeRobot, stores them under
   `/var/lib/cf-robot`, and requires a separate confirmation before the fixed
   SDK-style home pose. It accepts no client-supplied serial path or raw target.
+- `/monitor` streams normalized follower readback and raw servo counts. It opens
+  the bus for reads only, without calling the robot configure/torque methods or
+  writing `Goal_Position`; it blocks control, calibration, maintenance, and
+  update operations while connected.
 
 ## Trust boundaries
 
 Cloudflare Access should reject unauthenticated requests to **all** Pi
-paths, including `/update`, `/calibrate`, and `/maintenance`. The laptop supplies `CF-Access-Client-Id` and
+paths, including `/update`, `/calibrate`, `/maintenance`, and `/monitor`. The laptop supplies `CF-Access-Client-Id` and
 `CF-Access-Client-Secret` on the WebSocket upgrade. Independently, the Pi
 requires a shared `CF_ROBOT_ORIGIN_KEY` (at least 32 characters) as
 `X-CF-Robot-Key` on all Pi WebSocket routes. This limits the damage of an

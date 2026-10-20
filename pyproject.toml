@@ -31,6 +31,7 @@ cf-robot-update = "cf_robot.update_client:main"
 cf-robot-follower-calibrate = "cf_robot.calibration_client:main"
 cf-robot-follower-limits = "cf_robot.servo_client:limits_main"
 cf-robot-follower-home = "cf_robot.servo_client:home_main"
+cf-robot-pose-compare = "cf_robot.pose_compare_client:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

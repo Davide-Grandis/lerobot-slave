@@ -60,6 +60,26 @@ during teleoperation. The Pi-local
 `/opt/cf-robot/scripts/calibrate-follower.sh` helper remains available as a
 local/SSH fallback.
 
+### Read-only pose comparison
+
+Before building a leader/follower mapping, compare the values used by
+teleoperation with the follower's measured positions:
+
+```sh
+.venv/bin/cf-robot-pose-compare \
+  --port /dev/tty.usbmodemYOUR_LEADER_DEVICE \
+  --arm-id so101_leader
+```
+
+At about 10 Hz it displays, per joint, the leader action value (the normalized
+value the teleoperation loop sends), follower readback, their difference, and
+both raw servo counts. It reads each bus directly and never configures torque
+or writes a goal position. It does not disable existing torque; the arms'
+current torque state is left unchanged. Stop it with Ctrl-C. Close the
+Operator UI or any other process using the leader USB port first. It also
+requires the Pi to have the `/monitor` WSS endpoint and no active control
+session.
+
 ### Servo limits and SDK-style home
 
 Read the follower's configured servo limit registers over WSS:

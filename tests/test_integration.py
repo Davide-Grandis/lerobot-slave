@@ -222,6 +222,37 @@ class OriginTests(unittest.TestCase):
                 self.assertEqual(messages[-1]["state"], "succeeded")
                 self.assertFalse(client.get("/health").json()["maintenance_busy"])
 
+    def test_pose_monitor_wss_streams_read_only_follower_samples(self):
+        def fake_monitor(port, arm_id, stop, publish):
+            publish(
+                {
+                    "type": "follower_sample",
+                    "values": {joint: 1.0 for joint in JOINTS},
+                    "raw": {joint: 2000 for joint in JOINTS},
+                    "sampled_at": 1.0,
+                }
+            )
+            stop.wait(timeout=1)
+
+        with patch("cf_robot.follower.stream_follower_pose", side_effect=fake_monitor):
+            app = create_app(
+                "/dev/fake",
+                "so101_follower",
+                factory=FakeFollower,
+                origin_key=self.key,
+            )
+            with TestClient(app) as client:
+                with client.websocket_connect("/monitor", headers=self.headers) as socket:
+                    socket.send_json({"version": 1, "type": "start"})
+                    self.assertEqual(socket.receive_json()["type"], "monitor_started")
+                    sample = socket.receive_json()
+                    self.assertEqual(sample["type"], "follower_sample")
+                    self.assertEqual(sample["values"]["wrist_flex.pos"], 1.0)
+                    self.assertTrue(client.get("/health").json()["monitor_busy"])
+                    socket.send_json({"version": 1, "type": "stop"})
+                    self.assertEqual(socket.receive_json()["type"], "monitor_finished")
+                self.assertFalse(client.get("/health").json()["monitor_busy"])
+
     def test_web_controls_require_same_origin(self):
         async def fake_runner(url, port, arm_id, fps, stop, on_status):
             on_status({"state": "running"})
