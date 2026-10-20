@@ -1,0 +1,25 @@
+docs/controller-operations.md
+  s_163bd0a0d4d6ac::t_05643b0403d6de 63,75-100
+src/cf_robot/pose_compare_client.py
+  s_163bd0a0d4d6ac::t_d7fa61f3bb6a02 1,7,9,13-14,23-24,40-158,172,175-176,181,190-194,211-227,230-242,244-245,253-255,257-261,267-275,279,282,293-301,305-313,316-317,320,323-324,330-333,336-340,343-350,352,355-361,369-370,372,374-384,394-397,403-439,441-448,451-465,467-470,473,478,487-491,496-509,511-518
+src/cf_robot/web.py
+  s_163bd0a0d4d6ac::t_5a86aca573f585 24,33,82,106-111,268-269,283-284,424-426
+src/cf_robot/web_pose.py
+  s_163bd0a0d4d6ac::t_c4759f168f9f87 1-234
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2c9451a7f065dbfd4251c8f6729c581e479105da",
+  "prompts": {},
+  "sessions": {
+    "s_163bd0a0d4d6ac": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "platinum-bedbug",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
