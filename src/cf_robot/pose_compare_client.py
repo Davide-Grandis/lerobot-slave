@@ -20,7 +20,6 @@ from websockets.exceptions import WebSocketException
 from cf_robot.auth import access_headers
 from cf_robot.hardware import joint_positions, make_leader
 from cf_robot.protocol import JOINTS, VERSION
-from cf_robot.pose_monitor import report_bus_torque
 from cf_robot.servo_maintenance import read_servo_limits
 
 SAMPLE_INTERVAL_S = 0.1
@@ -115,7 +114,7 @@ def parse_pose_command(line, command_id):
 
 
 class TerminalInput:
-    """Small raw-mode input reader so live redraws do not eat typed commands."""
+    """Read commands without echo while preserving normal terminal line output."""
 
     def __init__(self, loop):
         if not sys.stdin.isatty():
@@ -127,7 +126,11 @@ class TerminalInput:
         self.lines = asyncio.Queue()
         self.changed = asyncio.Event()
         self.stop_requested = asyncio.Event()
-        tty.setraw(self.fd)
+        # Cbreak keeps OPOST/ONLCR enabled, so printed newlines still start at column 0.
+        tty.setcbreak(self.fd, termios.TCSADRAIN)
+        attributes = termios.tcgetattr(self.fd)
+        attributes[3] &= ~termios.ECHO
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, attributes)
         loop.add_reader(self.fd, self._read_ready)
 
     def _read_ready(self):
@@ -173,7 +176,6 @@ def _read_leader(leader, loop, samples, stop):
         bus.connect()
         connected = True
         limits = read_servo_limits(bus)
-        report_bus_torque(bus, "leader", publish)
         while not stop.is_set():
             started = time.monotonic()
             action = joint_positions(leader.get_action())
@@ -208,40 +210,16 @@ def _read_leader(leader, loop, samples, stop):
                 publish({"type": "leader_error", "message": f"read-only disconnect failed: {exc}"})
 
 
-def _torque_states(states):
-    if not states:
-        return "not read"
-    enabled = [
-        f"J{index + 1}"
-        for index, joint in enumerate(JOINTS)
-        if states.get(joint, False)
-    ]
-    return ",".join(enabled) if enabled else "none"
-
-
-def _render(
-    leader_sample,
-    follower_sample,
-    leader_torque=None,
-    follower_torque=None,
-    command_buffer="",
-    status_message="",
-):
+def _render(leader_sample, follower_sample, command_buffer="", status_message=""):
     if sys.stdout.isatty():
         sys.stdout.write("\033[H\033[J")
     print("ARMS MONITOR -- Ctrl-C or q to stop")
-    print(
-        "Torque at start: "
-        f"leader={_torque_states(leader_torque and leader_torque['before'])} "
-        f"follower={_torque_states(follower_torque and follower_torque['before'])}"
-    )
-    print(
-        "Torque now: "
-        f"leader={_torque_states(leader_sample['torque'])} "
-        f"follower={_torque_states(follower_sample['torque'])}"
-    )
     print("Units: J1-J5 deg; J6 0-100; raw counts/MIN/MAX are ticks.")
     print("Leader values are the normalized target values teleoperation sends.")
+    print(
+        f"{'Joint':17} {'Leader':>8} {'Follower':>8} {'Delta':>8} "
+        f"{'Unit':>6} {'L torque':>8} {'F torque':>8}"
+    )
     for index, joint in enumerate(JOINTS, start=1):
         leader_value = leader_sample["values"][joint]
         follower_value = follower_sample["values"][joint]
@@ -253,13 +231,13 @@ def _render(
         follower_limits = follower_sample["limits"][joint]
         print(
             f"J{index} {joint.removesuffix('.pos'):13} "
-            f"L {leader_value:7.2f} F {follower_value:7.2f} "
-            f"d {delta:+7.2f} {unit}"
+            f"{leader_value:8.2f} {follower_value:8.2f} {delta:+8.2f} "
+            f"{unit:>6} {'V' if leader_sample['torque'][joint] else 'X':>8} "
+            f"{'V' if follower_sample['torque'][joint] else 'X':>8}"
         )
         print(
-            f"   raw: L {leader_raw:4d} [{leader_limits['min']}..{leader_limits['max']}] "
-            f"F {follower_raw:4d} [{follower_limits['min']}..{follower_limits['max']}] "
-            f"torque {int(leader_sample['torque'][joint])}/{int(follower_sample['torque'][joint])}"
+            f"   raw ticks: L {leader_raw:4d} [{leader_limits['min']}..{leader_limits['max']}] "
+            f"F {follower_raw:4d} [{follower_limits['min']}..{follower_limits['max']}]"
         )
     print(
         f"Samples: leader={leader_sample['sampled_at']:.3f}, "
@@ -306,8 +284,6 @@ async def monitor_poses(url, port, arm_id):
         leader_thread.start()
         follower_sample = None
         leader_sample = None
-        follower_torque = None
-        leader_torque = None
         status_message = ""
         command_id = 0
         receive_task = asyncio.create_task(socket.recv())
@@ -345,8 +321,9 @@ async def monitor_poses(url, port, arm_id):
                         raise RuntimeError(message.get("message", "pose monitor failed"))
                     if is_follower_sample(message):
                         follower_sample = message
-                    elif message_type == "follower_torque":
-                        follower_torque = message
+                    elif message_type in ("leader_torque", "follower_torque"):
+                        # Ignore startup-state notifications from older Pi builds.
+                        pass
                     elif message_type == "monitor_finished":
                         server_finished = True
                         return
@@ -386,10 +363,6 @@ async def monitor_poses(url, port, arm_id):
                     message_type = message.get("type")
                     if message_type == "leader_error":
                         raise RuntimeError(message.get("message", "leader read failed"))
-                    if message_type == "leader_torque":
-                        leader_torque = message
-                        leader_task = asyncio.create_task(samples.get())
-                        continue
                     if message_type != "leader_sample":
                         raise RuntimeError("invalid local leader sample")
                     leader_sample = message
@@ -437,8 +410,6 @@ async def monitor_poses(url, port, arm_id):
                     _render(
                         leader_sample,
                         follower_sample,
-                        leader_torque,
-                        follower_torque,
                         terminal.buffer,
                         status_message,
                     )
@@ -484,10 +455,6 @@ def main():
     if not args.url:
         parser.error("pass --url or set CF_ROBOT_CONTROL_URL in controller.env")
 
-    print(
-        "Startup preserves torque on both arms. Use J1-J6 TE/TD or J* TE/TD "
-        "to change it explicitly; TD may let the arm sag."
-    )
     try:
         asyncio.run(
             monitor_poses(

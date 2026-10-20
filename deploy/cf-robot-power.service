@@ -1,0 +1,13 @@
+[Unit]
+Description=Schedule a fixed cf-robot reboot or shutdown
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/cf-robot-power
+TimeoutStartSec=20
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/cf-robot /run

@@ -27,6 +27,7 @@ from cf_robot.servo_maintenance import (
     move_to_home,
     read_limits_and_pose,
 )
+from cf_robot.system_commands import POWER_REQUEST, register_system_commands
 
 LOG = logging.getLogger(__name__)
 UPDATE_REQUEST = Path("/var/lib/cf-robot/update-request")
@@ -51,12 +52,29 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     control_lock = asyncio.Lock()
     video_lock = asyncio.Lock()
-    update_requested = UPDATE_REQUEST.exists()
+    update_requested = UPDATE_REQUEST.exists() or POWER_REQUEST.exists()
     calibration_requested = False
     maintenance_requested = False
     monitor_requested = False
     follower_factory = factory or (lambda: make_follower(port, arm_id))
     camera_factory = camera_factory or (lambda: make_camera(camera_device, width, height, video_fps))
+
+    def reserve_power():
+        nonlocal update_requested
+        if (
+            update_requested or UPDATE_REQUEST.exists() or POWER_REQUEST.exists()
+            or calibration_requested or maintenance_requested or monitor_requested
+            or control_lock.locked() or video_lock.locked()
+        ):
+            raise RuntimeError("stop all control, video and maintenance sessions before powering off")
+        # Reuse the maintenance interlock to block every new session until shutdown.
+        update_requested = True
+
+    def release_power():
+        nonlocal update_requested
+        update_requested = UPDATE_REQUEST.exists() or POWER_REQUEST.exists()
+
+    register_system_commands(app, origin_key, reserve_power, release_power)
 
     @app.get("/health")
     async def health():
@@ -752,6 +770,19 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                         continue
                     stop.set()
                     receive_task = asyncio.create_task(ws.receive_text())
+
+            # Stop the concurrent receive before sending the terminal frame. Otherwise
+            # it can consume the client's close frame while the server is still exiting.
+            for task in (receive_task, sample_task):
+                if task is not None and not task.done():
+                    task.cancel()
+                if task is not None:
+                    with contextlib.suppress(
+                        asyncio.CancelledError, WebSocketDisconnect, OSError
+                    ):
+                        await task
+            receive_task = None
+            sample_task = None
 
             try:
                 await worker_task

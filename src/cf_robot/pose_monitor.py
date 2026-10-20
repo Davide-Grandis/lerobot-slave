@@ -45,24 +45,6 @@ def _sample(device, side, limits):
     }
 
 
-def report_bus_torque(bus, side, publish):
-    """Report torque state without changing it."""
-    state = bus.sync_read("Torque_Enable", normalize=False, num_retry=2)
-    publish(
-        {
-            "type": f"{side}_torque",
-            "before": {
-                joint: bool(state[joint.removesuffix(".pos")])
-                for joint in JOINTS
-            },
-            "after": {
-                joint: bool(state[joint.removesuffix(".pos")])
-                for joint in JOINTS
-            },
-        }
-    )
-
-
 def validate_pose_command(message):
     if not isinstance(message, dict) or message.get("type") != "command":
         raise ValueError("unsupported monitor command")
@@ -328,7 +310,6 @@ def stream_leader_pose(port, arm_id, stop, publish):
         bus.connect()
         connected = True
         limits = read_servo_limits(bus)
-        report_bus_torque(bus, "leader", publish)
         while not stop.is_set():
             started = time.monotonic()
             publish(_sample(leader, "leader", limits))
@@ -356,7 +337,6 @@ def stream_follower_pose(
         bus.connect()
         connected = True
         limits = read_servo_limits(bus)
-        report_bus_torque(bus, "follower", publish)
         while not stop.is_set():
             if commands is not None:
                 try:

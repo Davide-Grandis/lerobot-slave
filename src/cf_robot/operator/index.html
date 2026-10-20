@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#18211f">
-    <title>Field Console — SO-ARM101</title>
+    <title>SO-ARM101 Console</title>
     <link rel="stylesheet" href="/app.css">
     <script type="module" src="/app.js"></script>
   </head>
@@ -23,13 +23,18 @@
 
       <main>
         <section class="intro">
-          <div class="eyebrow"><span>01 / REMOTE TELEOP</span><span>LEADER → FOLLOWER</span></div>
           <div class="intro-row">
-            <div>
-              <h1>Distance, <em>in motion.</em></h1>
-              <p class="intro-copy">A live instrument panel for the SO-ARM101. Check the real arm, confirm its measured pose, then choose how to move.</p>
-            </div>
-            <div class="device-tag"><span class="device-tag-label">ROBOT / 01</span><strong id="robot-name">SO-ARM101</strong><span>CONTROLLER STATION</span></div>
+            <h1>SO-ARM101 <em>Console</em></h1>
+          </div>
+        </section>
+
+        <section class="panel pairing-panel" id="pairing-panel">
+          <div><span class="section-kicker">LOCAL HARDWARE BRIDGE</span><h2>Pair this controller</h2><p>Run the local controller service on the computer with the leader arm. Pairing code is shown once in that terminal.</p></div>
+          <div class="pairing-fields">
+            <label>Controller address<input id="controller-origin" type="url" value="http://127.0.0.1:8080" autocomplete="url"></label>
+            <label>One-run pairing code<input id="pairing-code" type="password" autocomplete="off" placeholder="Paste code from controller terminal"></label>
+            <button class="button button-primary" id="pair-controller" type="button">Pair controller <span>↗</span></button>
+            <span class="pairing-status" id="pairing-status"></span>
           </div>
         </section>
 
@@ -39,11 +44,15 @@
           <span class="connection-right mono" id="connection-meta">WORKER / EDGE APP</span>
         </div>
 
-        <div class="utility-tabs" role="tablist" aria-label="Console utility">
-          <button id="teleop-tab" role="tab" aria-controls="teleop-panel" aria-selected="true" type="button">01 / Teleoperation</button>
-          <button id="pose-tab" role="tab" aria-controls="pose-panel" aria-selected="false" tabindex="-1" type="button">02 / Pose Monitor <span id="pose-tab-state"></span></button>
+        <div class="utility-bar">
+          <div class="utility-tabs" role="tablist" aria-label="Console utility">
+            <button id="teleop-tab" role="tab" aria-controls="teleop-panel" aria-selected="false" tabindex="-1" type="button">01 / Teleoperation</button>
+            <button id="pose-tab" role="tab" aria-controls="pose-panel" aria-selected="true" type="button">02 / Pose Monitor <span id="pose-tab-state"></span></button>
+          </div>
+          <button class="button button-estop" id="software-stop" type="button" disabled>■ &nbsp; SOFTWARE STOP</button>
         </div>
 
+        <div id="teleop-panel" role="tabpanel" aria-labelledby="teleop-tab" hidden>
         <section class="stage-grid">
           <article class="panel camera-panel">
             <div class="panel-heading">
@@ -78,13 +87,12 @@
                 <button class="button button-primary" id="start-control" type="button" disabled>Connect follower <span>↗</span></button>
                 <button class="button button-quiet" id="stop-control" type="button" disabled>Disconnect</button>
               </div>
-              <button class="button button-estop" id="software-stop" type="button" disabled>■ &nbsp; SOFTWARE STOP</button>
               <div class="stop-warning">Software stop is not a physical emergency stop. Keep the follower’s hardware stop and workspace in reach.</div>
             </div>
           </article>
         </section>
 
-        <section class="operation-grid" id="teleop-panel" role="tabpanel" aria-labelledby="teleop-tab">
+        <section class="operation-grid">
           <article class="panel model-panel">
             <div class="panel-heading model-heading">
               <div><span class="section-kicker">KINEMATIC MODEL / URDF JOINT FRAMES</span><h2>Measured pose</h2></div>
@@ -125,30 +133,29 @@
             </div>
           </article>
         </section>
+        </div>
 
-        <section class="panel pose-panel" id="pose-panel" role="tabpanel" aria-labelledby="pose-tab" hidden>
+        <div id="pose-panel" role="tabpanel" aria-labelledby="pose-tab">
+        <section class="panel pose-panel" id="pose-diagnostics">
           <div class="panel-heading">
             <div><span class="section-kicker">SERVO DIAGNOSTICS / LEADER + FOLLOWER</span><h2>Pose Monitor</h2></div>
             <span id="pose-state" class="mono">IDLE</span>
           </div>
           <div class="pose-body">
-            <p class="session-copy">Compare live leader action values with follower servo readback. Monitoring does not stream leader targets. Stop teleoperation and any CLI monitor before starting; the serial ports are exclusive.</p>
             <div class="pose-start-controls">
-              <p>Startup preserves current torque. Use explicit follower commands to change it.</p>
-              <button class="button button-primary" id="pose-start" type="button" disabled>Start monitoring</button>
+              <button class="button button-primary" id="pose-start" type="button" aria-describedby="pose-start-reason" disabled>Start monitoring</button>
               <button class="button button-quiet" id="pose-stop" type="button" disabled>Stop monitor / command</button>
             </div>
-            <p class="stop-warning">Arms may sag when torque is disabled. Support both arms first. Stop ends monitoring and interrupts a move; it does not restore torque or replace a physical emergency stop. Switching tabs does not stop a session.</p>
+            <p id="pose-start-reason" class="pairing-status" role="status" aria-live="polite">Pair the local controller above to enable monitoring.</p>
             <p id="pose-message" role="status" aria-live="polite">Pair the local controller to begin. A leader USB port is optional for follower-only monitoring.</p>
             <div class="pose-table-scroll" role="region" aria-label="Live servo readings" tabindex="0">
               <table class="pose-table">
-                <caption>J1-J5: degrees. J6: normalized 0-100 (not degrees). Delta = leader - follower. Raw and MIN/MAX: encoder ticks. Torque: ON / off.</caption>
+                <caption>J1-J5: degrees. J6: normalized 0-100 (not degrees). Delta = leader - follower. Raw and MIN/MAX: encoder ticks. Torque: V=enabled, X=disabled.</caption>
                 <thead><tr><th scope="col">Joint</th><th scope="col">Unit</th><th scope="col">Leader</th><th scope="col">Follower</th><th scope="col">Delta</th><th scope="col">L raw</th><th scope="col">L MIN..MAX</th><th scope="col">F raw</th><th scope="col">F MIN..MAX</th><th scope="col">L torque</th><th scope="col">F torque</th></tr></thead>
                 <tbody id="pose-readings"></tbody>
               </table>
             </div>
             <p class="mono" id="pose-sample-age">LEADER / NO SAMPLE &nbsp; FOLLOWER / NO SAMPLE</p>
-            <p class="pose-torque-summary" id="pose-torque-summary">Torque at monitor start (unchanged): not read</p>
             <form id="pose-command-form" class="pose-command-form">
               <div><span class="section-kicker">FOLLOWER ONLY / ONE JOINT AT A TIME</span><h3>Explicit servo command</h3></div>
               <label>Joint<select id="pose-joint"><option value="1">J1 / shoulder pan</option><option value="2">J2 / shoulder lift</option><option value="3">J3 / elbow flex</option><option value="4">J4 / wrist flex</option><option value="5">J5 / wrist roll</option><option value="6">J6 / gripper</option></select></label>
@@ -162,15 +169,34 @@
           </div>
         </section>
 
-        <section class="panel pairing-panel" id="pairing-panel">
-          <div><span class="section-kicker">LOCAL HARDWARE BRIDGE</span><h2>Pair this controller</h2><p>Run the local controller service on the computer with the leader arm. Pairing code is shown once in that terminal.</p></div>
-          <div class="pairing-fields">
-            <label>Controller address<input id="controller-origin" type="url" value="http://127.0.0.1:8080" autocomplete="url"></label>
-            <label>One-run pairing code<input id="pairing-code" type="password" autocomplete="off" placeholder="Paste code from controller terminal"></label>
-            <button class="button button-primary" id="pair-controller" type="button">Pair controller <span>↗</span></button>
-            <span class="pairing-status" id="pairing-status"></span>
-          </div>
+        <section class="pose-arm-grid" aria-label="Live SO-ARM101 arm models">
+          <article class="panel pose-arm-card" id="pose-leader-model" data-state="waiting">
+            <div class="panel-heading">
+              <div><span class="section-kicker">SO-ARM101 / USB LOCAL</span><h2>Leader arm</h2></div>
+              <span class="mono pose-arm-state" id="pose-leader-state">NO SAMPLE</span>
+            </div>
+            <div class="model-stage pose-arm-stage">
+              <canvas id="pose-leader-canvas" aria-label="Interactive three-dimensional SO-ARM101 leader model driven by measured joint values"></canvas>
+              <div class="model-empty" id="pose-leader-empty">Waiting for leader joint readings</div>
+              <div class="model-instructions mono">DRAG TO ORBIT / SCROLL TO ZOOM</div>
+            </div>
+            <div class="pose-arm-joints" id="pose-leader-joints"></div>
+          </article>
+          <article class="panel pose-arm-card" id="pose-follower-model" data-state="waiting">
+            <div class="panel-heading">
+              <div><span class="section-kicker">SO-ARM101 / RPI REMOTE</span><h2>Follower arm</h2></div>
+              <span class="mono pose-arm-state" id="pose-follower-state">NO SAMPLE</span>
+            </div>
+            <div class="model-stage pose-arm-stage">
+              <canvas id="pose-follower-canvas" aria-label="Interactive three-dimensional SO-ARM101 follower model driven by measured joint values"></canvas>
+              <div class="model-empty" id="pose-follower-empty">Waiting for follower joint readings</div>
+              <div class="model-instructions mono">DRAG TO ORBIT / SCROLL TO ZOOM</div>
+            </div>
+            <div class="pose-arm-joints" id="pose-follower-joints"></div>
+          </article>
+          <p class="pose-model-note">URDF-based kinematic models with simplified geometry, not a camera view. Joint readings are authoritative; spatial alignment depends on each arm's calibration.</p>
         </section>
+        </div>
       </main>
 
       <footer class="app-footer mono"><span>SO-ARM101 / FIELD CONSOLE</span><span>ONE CONTROL SOURCE AT A TIME · NO AUTO-RESUME</span></footer>

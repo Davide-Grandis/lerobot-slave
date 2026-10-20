@@ -21,11 +21,20 @@ except ImportError:
 MOCK_BRIDGE = """
 const originalFetch = window.fetch.bind(window);
 window.testCommands = [];
+window.testControl = {running:false,state:'idle',camera_live:false};
+window.testPoseOffline = false;
+window.testLeaderOffset = 0;
+window.testFollowerOffset = 0;
+window.testMissingLeader = false;
+window.testSampleAge = 0;
+window.testVideoRequests = 0;
 const keys = ['shoulder_pan.pos','shoulder_lift.pos','elbow_flex.pos',
               'wrist_flex.pos','wrist_roll.pos','gripper.pos'];
 const sample = side => ({
-  type:'pose_sample', side, sampled_at:Date.now()/1000,
-  values:Object.fromEntries(keys.map((k,i)=>[k,i*2])),
+  type:'pose_sample', side, sampled_at:Date.now()/1000-window.testSampleAge,
+  values:Object.fromEntries(keys.map((k,i)=>[
+    k,i*2+(side==='leader'?window.testLeaderOffset:window.testFollowerOffset)
+  ])),
   raw:Object.fromEntries(keys.map(k=>[k,2048])),
   torque:Object.fromEntries(keys.map(k=>[k,true])),
   limits:Object.fromEntries(keys.map(k=>[k,{min:100,max:3900}]))
@@ -40,8 +49,8 @@ window.fetch = async (url, options={}) => {
     window.pairedAddress = new URL(url).origin;
     return reply({api_version:1});
   }
-  if (path === '/api/status') return reply({running:false,state:'idle',camera_live:false});
-  if (path === '/api/video/frame') return reply({},503);
+  if (path === '/api/status') return reply(window.testControl);
+  if (path === '/api/video/frame') { window.testVideoRequests++; return reply({},503); }
   if (path === '/api/pose/start') { running=true; return reply({running}); }
   if (path === '/api/pose/stop') { running=false; return reply({running}); }
   if (path === '/api/pose/command') {
@@ -52,9 +61,11 @@ window.fetch = async (url, options={}) => {
     return reply({command_id:command.command_id});
   }
   if (path === '/api/pose/heartbeat') return reply({ok:true});
+  if (path === '/api/pose/status' && window.testPoseOffline) return reply({},503);
   if (path === '/api/pose/status') return reply({
     running,state:running?'ready':'idle',command_pending:false,
-    leader:running?sample('leader'):null,follower:running?sample('follower'):null,command
+    leader:running&&!window.testMissingLeader?sample('leader'):null,
+    follower:running?sample('follower'):null,command
   });
   return reply({},401);
 };
@@ -135,6 +146,28 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                     origin = f"http://127.0.0.1:{server.server_port}"
                     await cdp("Page.navigate", {"url": origin})
                     await wait_for("document.querySelectorAll('#pose-readings tr').length === 6")
+                    self.assertTrue(await evaluate("""
+                      document.querySelector('main').firstElementChild.matches('.intro') &&
+                      document.querySelector('main').children[1].id === 'pairing-panel' &&
+                      document.querySelector('h1').textContent === 'SO-ARM101 Console' &&
+                      parseFloat(getComputedStyle(document.querySelector('h1')).fontSize) <= 48 &&
+                      document.querySelector('.intro-copy') === null &&
+                      document.querySelector('.device-tag') === null &&
+                      document.getElementById('pairing-panel').getBoundingClientRect().bottom <
+                        document.querySelector('.utility-tabs').getBoundingClientRect().top &&
+                      document.querySelector('.camera-panel').offsetParent === null &&
+                      document.querySelector('.session-panel').offsetParent === null &&
+                      document.getElementById('pose-tab').getAttribute('aria-selected') === 'true'
+                    """))
+                    self.assertTrue(await evaluate("document.getElementById('pose-start').disabled"))
+                    self.assertIn("Pair the local controller", await evaluate(
+                        "document.getElementById('pose-start-reason').textContent",
+                    ))
+                    self.assertTrue(await evaluate("""[
+                      'Compare live leader action values with follower servo readback.',
+                      'Startup preserves current torque. Use explicit follower commands to change it.',
+                      'Arms may sag when torque is disabled. Support both arms first.'
+                    ].every(text => !document.body.textContent.includes(text))"""))
                     self.assertEqual(await evaluate(
                         "getComputedStyle(document.body).backgroundColor",
                     ), "rgb(24, 33, 31)")
@@ -153,16 +186,77 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                     """)
                     await wait_for("!document.getElementById('pose-start').disabled")
                     self.assertEqual(await evaluate("window.pairedAddress"), origin)
+                    self.assertEqual(await evaluate("window.testVideoRequests"), 0)
+                    self.assertTrue(await evaluate("document.getElementById('pose-start-reason').hidden"))
+                    for flag, reason in (
+                        ("running", "Disconnect teleoperation"),
+                        ("estop_latched", "Re-arm the software stop"),
+                    ):
+                        await evaluate(f"window.testControl.{flag}=true")
+                        await wait_for(
+                            "document.getElementById('pose-start').disabled && "
+                            f"document.getElementById('pose-start-reason').textContent.includes('{reason}')",
+                        )
+                        await evaluate(f"window.testControl.{flag}=false")
+                        await wait_for("!document.getElementById('pose-start').disabled")
+                    await evaluate("window.testPoseOffline=true")
+                    await wait_for(
+                        "document.getElementById('pose-start').disabled && "
+                        "document.getElementById('pose-start-reason').textContent.includes('cf-robot-web')",
+                    )
+                    await evaluate("window.testPoseOffline=false")
+                    await wait_for("!document.getElementById('pose-start').disabled")
                     self.assertTrue(await evaluate("""
                       document.getElementById('teleop-panel').hidden &&
                       !document.getElementById('pose-panel').hidden
                     """))
                     await evaluate("document.getElementById('pose-start').click()")
                     await wait_for("document.getElementById('pose-state').textContent === 'READY'")
+                    await wait_for("document.getElementById('pose-leader-model').dataset.state === 'live'")
+                    self.assertTrue(await evaluate("""
+                      document.getElementById('pose-follower-model').dataset.state === 'live' &&
+                      document.getElementById('pairing-panel').getBoundingClientRect().bottom <
+                        document.getElementById('pose-diagnostics').getBoundingClientRect().top &&
+                      document.getElementById('pose-diagnostics').getBoundingClientRect().bottom <=
+                        document.querySelector('.pose-arm-grid').getBoundingClientRect().top
+                    """))
                     self.assertTrue(await evaluate("!document.getElementById('software-stop').disabled"))
                     self.assertEqual(await evaluate(
                         "document.querySelector('#pose-readings tr td:nth-child(3)').textContent",
                     ), "0.00")
+                    await evaluate("""
+                      window.leaderImage = document.getElementById('pose-leader-canvas').toDataURL();
+                      window.followerImage = document.getElementById('pose-follower-canvas').toDataURL();
+                      window.testLeaderOffset = 20;
+                    """)
+                    await wait_for("document.getElementById('pose-leader-canvas').toDataURL() !== window.leaderImage")
+                    self.assertTrue(await evaluate(
+                        "document.getElementById('pose-follower-canvas').toDataURL() === window.followerImage",
+                    ))
+                    self.assertIn("20.0", await evaluate(
+                        "document.querySelector('#pose-leader-joints strong').textContent",
+                    ))
+                    await evaluate("""
+                      window.leaderImage = document.getElementById('pose-leader-canvas').toDataURL();
+                      window.testFollowerOffset = 10;
+                    """)
+                    await wait_for("document.getElementById('pose-follower-canvas').toDataURL() !== window.followerImage")
+                    self.assertTrue(await evaluate(
+                        "document.getElementById('pose-leader-canvas').toDataURL() === window.leaderImage",
+                    ))
+                    await evaluate("window.testSampleAge = 5")
+                    await wait_for("document.getElementById('pose-leader-model').dataset.state === 'stale'")
+                    self.assertEqual(await evaluate(
+                        "document.getElementById('pose-follower-state').textContent",
+                    ), "LAST SAMPLE")
+                    await evaluate("window.testSampleAge = 0; window.testMissingLeader = true")
+                    await wait_for("document.getElementById('pose-leader-model').dataset.state === 'waiting'")
+                    self.assertFalse(await evaluate("document.getElementById('pose-leader-empty').hidden"))
+                    self.assertEqual(await evaluate(
+                        "document.getElementById('pose-follower-model').dataset.state",
+                    ), "live")
+                    await evaluate("window.testMissingLeader = false")
+                    await wait_for("document.getElementById('pose-leader-model').dataset.state === 'live'")
                     await evaluate("""
                       document.getElementById('pose-joint').value='6';
                       document.getElementById('pose-joint').dispatchEvent(new Event('change'));
@@ -180,6 +274,13 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                             "width": width, "height": height, "deviceScaleFactor": 1,
                             "mobile": width < 500,
                         })
+                        self.assertTrue(await evaluate("""(() => {
+                          const leader = document.getElementById('pose-leader-model').getBoundingClientRect();
+                          const follower = document.getElementById('pose-follower-model').getBoundingClientRect();
+                          return Math.abs(leader.width - follower.width) < 1 &&
+                            Math.abs(leader.height - follower.height) < 1 &&
+                            (innerWidth > 690 ? leader.top === follower.top : follower.top > leader.bottom);
+                        })()"""))
                         self.assertTrue(await evaluate(
                             "document.documentElement.scrollWidth <= innerWidth",
                         ), await evaluate("""({
@@ -194,11 +295,17 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                         if os.environ.get("CF_ROBOT_SCREENSHOT_DIR"):
                             directory = Path(os.environ["CF_ROBOT_SCREENSHOT_DIR"])
                             self.assertTrue(directory.is_dir())
-                            await evaluate("document.getElementById('pose-panel').scrollIntoView()")
+                            await evaluate("document.querySelector('.pose-arm-grid').scrollIntoView()")
                             image = await cdp("Page.captureScreenshot", {"format": "png"})
                             (directory / f"pose-{width}.png").write_bytes(base64.b64decode(image["data"]))
                     await evaluate("document.getElementById('pose-stop').click()")
                     await wait_for("document.getElementById('pose-state').textContent === 'IDLE'")
+                    await evaluate("document.getElementById('teleop-tab').click()")
+                    self.assertTrue(await evaluate("""
+                      document.querySelector('.camera-panel').offsetParent !== null &&
+                      document.querySelector('.session-panel').offsetParent !== null &&
+                      document.getElementById('pose-panel').hidden
+                    """))
                     self.assertFalse([event for event in self.events
                                       if event.get("method") == "Runtime.exceptionThrown"])
                 chrome.terminate()

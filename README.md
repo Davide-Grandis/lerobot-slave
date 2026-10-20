@@ -39,6 +39,7 @@ this repository does not provision Cloudflare resources.
     - [CLI (phase 1)](#cli-phase-1)
     - [Remote follower parking commands (WSS)](#remote-follower-parking-commands-wss)
     - [Update the Pi over WSS](#update-the-pi-over-wss)
+    - [Linux commands on the Pi over WSS](#linux-commands-on-the-pi-over-wss)
     - [Cloud-hosted operator app (phase 2)](#cloud-hosted-operator-app-phase-2)
     - [Configuration reference](#configuration-reference)
 - [Operating runbook](#operating-runbook)
@@ -316,8 +317,8 @@ sudo systemctl enable --now cf-robot-update.path
 ```
 
 This is a one-time privileged setup. The existing Access application protects
-the entire hostname, including `/update`, `/calibrate`, `/maintenance`, and
-`/monitor`, so no additional Tunnel route is needed. After this setup, code
+the entire hostname, including `/update`, `/calibrate`, `/maintenance`,
+`/monitor`, and `/system`, so no additional Tunnel route is needed. After this setup, code
 and dependency updates, interactive follower calibration, servo-limit reads,
 the fixed go-home operation, and read-only pose monitoring can be requested
 from the Mac over WSS without SSH.
@@ -466,7 +467,7 @@ Configure Access for the entire hostname before operating the arm:
 
 1. Create a Cloudflare Access **self-hosted application** covering the whole
    hostname, including `/health`, `/control`, `/video`, `/update`,
-   `/calibrate`, `/maintenance`, and `/monitor`. Create a service token and a
+   `/calibrate`, `/maintenance`, `/monitor`, and `/system`. Create a service token and a
    **Service Auth** policy allowing only that token.
 
 2. Copy the token's client ID and secret for entry into the laptop's private
@@ -725,6 +726,76 @@ configured GitHub repository's `main` branch, refreshes dependencies, and
 restarts the follower. The Mac does not need the Pi's follower USB path; that
 remains in the Pi's `FOLLOWER_PORT` setting.
 
+#### Linux commands on the Pi over WSS
+
+After updating both checkouts, refresh the controller CLI entry points from
+the Mac checkout root:
+
+```sh
+.venv/bin/python -m pip install -e . --no-deps
+```
+
+Source `controller.env` as for the other CLI commands, then run:
+
+```sh
+.venv/bin/cf-robot-system interfaces
+.venv/bin/cf-robot-system reboot
+.venv/bin/cf-robot-system shutdown
+```
+
+`interfaces` runs `ip -details address show` on the Pi and displays interface
+flags, link details, IPv4/IPv6 addresses and prefixes. All commands display the
+Pi's stdout, stderr and exit status; a nonzero Pi status also fails the CLI.
+The commands use `CF_ROBOT_CONTROL_URL` (or `--url`) and the existing Access
+and origin-key credentials to connect to `/system` over WSS.
+
+Quoted Linux commands are also accepted:
+
+```sh
+.venv/bin/cf-robot-system "ip -details address show"
+.venv/bin/cf-robot-system "sudo reboot"
+.venv/bin/cf-robot-system "sudo shutdown -h now"
+```
+
+This is a fixed allowlist, not a remote shell: other commands, extra
+arguments, pipes and shell substitutions are rejected. No SSH is needed
+for routine use. Interface reads work without the power helper; the Pi
+needs `iproute2` installed.
+
+Power commands require a one-time privileged setup on the Pi. Install
+the root-owned helper and its watcher after updating `/opt/cf-robot`:
+
+```sh
+sudo install -o root -g root -m 0755 /opt/cf-robot/deploy/cf-robot-power.py /usr/local/sbin/cf-robot-power
+sudo install -o root -g root -m 0644 /opt/cf-robot/deploy/cf-robot-power.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 /opt/cf-robot/deploy/cf-robot-power.path /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cf-robot-power.path
+sudo systemctl restart cf-robot-follower
+```
+
+The follower retains `NoNewPrivileges=true`; it cannot run arbitrary `sudo`
+commands. Instead, the helper accepts only the two fixed power operations.
+Keep `/system` behind the same hostname-wide Cloudflare Access policy.
+
+Before reboot/shutdown, stop teleoperation, video, pose comparison,
+calibration and servo maintenance, and physically secure the arm and any
+load. The Pi rejects power requests while these sessions or an update are
+active. The CLI requires typing `YES`; `--yes` explicitly bypasses this
+prompt for automation.
+
+**Power commands deliberately schedule a one-minute delay**, including the
+`sudo shutdown -h now` spelling, so that the scheduling command's response
+can reach the controller before WSS disappears. The helper executes
+`shutdown -r +1` or `shutdown -h +1`. A successful response confirms
+scheduling, not completion of reboot/power-off. New robot sessions stay
+blocked until restart; the Pi must be powered on locally after shutdown.
+If the connection drops or the helper times out, the outcome may be
+unknown: do not automatically resend a power command. Inspect the Pi
+locally if necessary. If scheduling fails definitively, sessions are
+unblocked. If an unknown outcome leaves the follower interlocked, only
+restart its service locally after confirming no power operation is pending.
+
 #### Cloud-hosted operator app (phase 2)
 
 The operator UI is deployed as Cloudflare Worker Static Assets and protected
@@ -747,7 +818,7 @@ start control.
 | `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` | Laptop environment only | Access service token used for public `wss://` requests; never place these on the Pi or in browser code. |
 | `CF_ROBOT_OPERATOR_ORIGIN` | Laptop environment or `cf-robot-web --operator-origin` | Exact HTTPS origin allowed to pair with the loopback controller agent. |
 | `CF_ROBOT_BRIDGE_TOKEN` | Optional laptop environment | Pairing code for the hosted UI; if unset, a one-run code is generated and printed locally. Never put it in D1 or a URL. |
-| `CF_ROBOT_CONTROL_URL` | Laptop `controller.env` | Public WSS control URL used by teleoperation, parking, Pi updates, follower calibration, servo-limit reads, go-home, and pose comparison, for example `wss://robot.example.com/control`. |
+| `CF_ROBOT_CONTROL_URL` | Laptop `controller.env` | Public WSS control URL used by teleoperation, parking, Pi updates, follower calibration, servo-limit reads, go-home, pose comparison, and Linux commands, for example `wss://robot.example.com/control`. |
 | `HF_HOME` | Pi service unit and calibration command | LeRobot/Hugging Face data directory for the `robot` user. |
 | `--listen-port` | Pi follower CLI | Loopback HTTP/WebSocket port, default `8765`; update Tunnel origin if changed. |
 | `--camera-width`, `--camera-height`, `--camera-fps` | Pi follower CLI | Video capture defaults `640`, `480`, `10`; fps must be 1-30. Update the unit if changing them. |
@@ -756,7 +827,7 @@ start control.
 | `--operator-origin` | Laptop web CLI | Exact HTTPS origin of the Cloudflare-hosted operator app. |
 
 The Pi offers `GET /health`, `WS /control`, `WS /video`, `WS /update`,
-`WS /calibrate`, `WS /maintenance`, and `WS /monitor` behind the same
+`WS /calibrate`, `WS /maintenance`, `WS /monitor`, and `WS /system` behind the same
 Access hostname. The laptop agent listens only on loopback and exposes the
 operator UI plus status, video-frame, start/stop, emergency-stop, mode, leader,
 manual-jog, and heartbeat APIs. The hosted page polls measured state and the

@@ -7,7 +7,6 @@ from cf_robot.pose_compare_client import is_follower_sample, parse_pose_command
 from cf_robot.protocol import JOINTS
 from cf_robot.pose_monitor import (
     execute_pose_command,
-    report_bus_torque,
     stream_follower_pose,
     stream_leader_pose,
     validate_pose_command,
@@ -149,13 +148,10 @@ class PoseMonitorTests(unittest.TestCase):
             stream(*call_args)
 
         sample = next(message for message in messages if message["type"].endswith("_sample"))
-        torque = next(message for message in messages if message["type"].endswith("_torque"))
         self.assertAlmostEqual(sample["values"]["shoulder_pan.pos"], 0.0)
         self.assertEqual(sample["raw"]["shoulder_pan.pos"], 2000)
         self.assertEqual(sample["limits"]["shoulder_pan.pos"], {"min": 100, "max": 3900})
         self.assertTrue(sample["torque"]["gripper.pos"])
-        self.assertTrue(torque["before"]["gripper.pos"])
-        self.assertEqual(torque["before"], torque["after"])
         self.assertEqual(arm.bus.disconnect_torque_args, [False])
         self.assertEqual(arm.bus.writes, [])
 
@@ -164,18 +160,6 @@ class PoseMonitorTests(unittest.TestCase):
 
     def test_follower_stream_reads_observation_without_configuring_or_writing(self):
         self._check_stream(stream_follower_pose, "cf_robot.pose_monitor.make_follower")
-
-    def test_startup_torque_report_does_not_change_any_servo(self):
-        arm = FakeArm()
-        arm.bus.torque["gripper"] = False
-        messages = []
-
-        report_bus_torque(arm.bus, "follower", messages.append)
-
-        self.assertEqual(arm.bus.writes, [])
-        self.assertTrue(messages[0]["before"]["shoulder_pan.pos"])
-        self.assertEqual(messages[0]["before"], messages[0]["after"])
-        self.assertFalse(messages[0]["before"]["gripper.pos"])
 
     def test_client_accepts_only_follower_samples(self):
         self.assertTrue(

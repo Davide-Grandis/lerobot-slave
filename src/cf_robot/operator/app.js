@@ -59,7 +59,6 @@ const elements = {
   commandCount: $("command-count"),
   feedbackAge: $("feedback-age"),
   identity: $("operator-identity"),
-  robotName: $("robot-name"),
   rearmDialog: $("rearm-dialog"),
   rearmConfirmation: $("rearm-confirmation"),
 };
@@ -141,7 +140,7 @@ function setCameraLive(live, message = "") {
   elements.cameraClock.textContent = live ? "LIVE / 10 HZ" : "NO SIGNAL";
   if (!live) {
     elements.cameraAge.textContent = "—";
-    showConnection("CAMERA FEED REQUIRED BEFORE MOTION", false);
+    if (!$("teleop-panel").hidden) showConnection("CAMERA FEED REQUIRED BEFORE MOTION", false);
   }
 }
 
@@ -259,12 +258,15 @@ function updateButtons(status) {
   } else {
     elements.feedbackAge.textContent = "—";
   }
+  const monitoring = $("teleop-panel").hidden;
   showConnection(
     stopped ? "SOFTWARE STOP LATCHED — INSPECT BEFORE RE-ARM"
-      : status.running ? "CONTROL SESSION OPEN" : state.paired
-        ? cameraLive ? "CAMERA READY / CONTROL DISARMED" : "WAITING FOR CAMERA"
-        : "CONNECT THE LOCAL CONTROLLER",
-    cameraLive && !stopped,
+      : status.running ? "CONTROL SESSION OPEN"
+        : !state.paired ? "CONNECT THE LOCAL CONTROLLER"
+          : !state.agent ? "LOCAL CONTROLLER OFFLINE"
+            : monitoring ? poseMonitor?.running ? "POSE MONITOR ACTIVE" : "CONTROLLER PAIRED / MONITOR DISARMED"
+              : cameraLive ? "CAMERA READY / CONTROL DISARMED" : "WAITING FOR CAMERA",
+    !stopped && (monitoring ? Boolean(state.agent) : cameraLive),
   );
   if (stopped) {
     elements.start.textContent = "Re-arm required";
@@ -304,6 +306,10 @@ async function pollStatus() {
 
 async function pollFrame() {
   if (!state.paired) return;
+  if ($("teleop-panel").hidden && !state.agent?.running) {
+    state.videoTimer = window.setTimeout(pollFrame, 300);
+    return;
+  }
   try {
     const response = await fetch(`${state.controllerBase}/api/video/frame`, {
       cache: "no-store",
@@ -352,7 +358,6 @@ async function connectWorkerIdentity() {
     const robot = robots?.[0];
     if (robot) {
       state.robotId = robot.id;
-      elements.robotName.textContent = robot.name;
     }
   } catch {
     elements.identity.textContent = "LOCAL OPERATOR";
@@ -370,8 +375,9 @@ async function pairController() {
     state.paired = true;
     await agentRequest("/api/config");
     elements.pairingPanel.classList.add("paired");
-    announce("Controller paired. Opening camera…", "success");
-    showConnection("CONTROLLER PAIRED / WARMING CAMERA", false);
+    const monitoring = $("teleop-panel").hidden;
+    announce(monitoring ? "Controller paired. Ready to monitor." : "Controller paired. Opening camera…", "success");
+    showConnection(monitoring ? "CONTROLLER PAIRED / MONITOR DISARMED" : "CONTROLLER PAIRED / WARMING CAMERA", monitoring);
     if (!state.pollTimer) pollLoop();
     if (!state.videoTimer) pollFrame();
   } catch (error) {

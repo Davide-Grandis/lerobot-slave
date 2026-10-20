@@ -227,11 +227,6 @@ class OriginTests(unittest.TestCase):
         def fake_monitor(
             port, arm_id, stop, publish, commands, command_busy
         ):
-            publish({
-                "type": "follower_torque",
-                "before": {joint: index % 2 == 0 for index, joint in enumerate(JOINTS)},
-                "after": {joint: index % 2 == 0 for index, joint in enumerate(JOINTS)},
-            })
             publish(
                 {
                     "type": "pose_sample",
@@ -296,14 +291,11 @@ class OriginTests(unittest.TestCase):
                     )
                     started = socket.receive_json()
                     self.assertEqual(started["type"], "monitor_started")
-                    torque = socket.receive_json()
-                    self.assertEqual(torque["type"], "follower_torque")
-                    self.assertEqual(torque["before"], torque["after"])
-                    self.assertTrue(torque["after"]["shoulder_pan.pos"])
                     sample = socket.receive_json()
                     self.assertEqual(sample["type"], "pose_sample")
                     self.assertEqual(sample["side"], "follower")
                     self.assertEqual(sample["values"]["wrist_flex.pos"], 1.0)
+                    self.assertTrue(sample["torque"]["shoulder_pan.pos"])
                     self.assertTrue(client.get("/health").json()["monitor_busy"])
                     socket.send_json(
                         {
@@ -338,6 +330,8 @@ class OriginTests(unittest.TestCase):
                     )
                     socket.send_json({"version": 1, "type": "stop"})
                     self.assertEqual(socket.receive_json()["type"], "monitor_finished")
+                    with self.assertRaises(WebSocketDisconnect):
+                        socket.receive_text()
                 self.assertFalse(client.get("/health").json()["monitor_busy"])
 
     def test_web_controls_require_same_origin(self):

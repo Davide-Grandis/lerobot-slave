@@ -1,4 +1,4 @@
-import { JOINTS } from "./arm-viewer.js";
+import { JOINTS, createArmViewer } from "./arm-viewer.js";
 
 const $ = (id) => document.getElementById(id);
 const display = (value, digits = 2) => Number.isFinite(value) ? value.toFixed(digits) : "--";
@@ -8,6 +8,22 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
   let online = false;
   let busy = false;
   let lastHeartbeat = 0;
+  const models = Object.fromEntries(["leader", "follower"].map((side) => {
+    const values = JOINTS.map((joint, index) => {
+      const item = document.createElement("div");
+      const label = document.createElement("span");
+      label.textContent = `J${index + 1} / ${joint.label}`;
+      const value = document.createElement("strong");
+      value.textContent = "--";
+      item.append(label, value);
+      $(`pose-${side}-joints`).append(item);
+      return value;
+    });
+    return [side, {
+      viewer: createArmViewer($(`pose-${side}-canvas`), { solid: true }),
+      values,
+    }];
+  }));
   const rows = JOINTS.map((joint, index) => {
     const row = document.createElement("tr");
     const name = document.createElement("th");
@@ -26,8 +42,17 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
 
   function updateControls() {
     const control = controlStatus();
-    $("pose-start").disabled = !paired() || !online || busy || status.running
-      || Boolean(control?.running || control?.estop_latched);
+    const startReason = !paired() ? "Pair the local controller above to enable monitoring."
+      : !online ? "Waiting for the local controller. Check that cf-robot-web is running."
+        : busy ? "Request in progress."
+          : status.running ? "Monitor is already running."
+            : control?.estop_latched ? "Re-arm the software stop before starting."
+              : control?.running ? "Disconnect teleoperation before starting monitoring."
+                : "";
+    $("pose-start").disabled = Boolean(startReason);
+    $("pose-start").title = startReason;
+    $("pose-start-reason").textContent = startReason;
+    $("pose-start-reason").hidden = !startReason;
     $("pose-stop").disabled = !paired() || !status.running || status.state === "stopping";
     const fresh = status.follower && Date.now() / 1000 - status.follower.sampled_at < 1.5;
     $("pose-send").disabled = !online || busy || !status.running || status.state !== "ready"
@@ -39,12 +64,31 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
     $("pose-tab-state").textContent = status.running ? ` / ${online ? status.state.toUpperCase() : "OFFLINE"}` : "";
     const follower = status.follower;
     const leader = status.leader;
+    for (const [side, model] of Object.entries(models)) {
+      const sample = status[side];
+      const valid = JOINTS.every(({ key }) => Number.isFinite(sample?.values?.[key]));
+      const fresh = valid && online && status.running
+        && Date.now() / 1000 - sample.sampled_at <= 1.5;
+      const modelState = !valid ? "waiting" : fresh ? "live" : "stale";
+      $(`pose-${side}-model`).dataset.state = modelState;
+      $(`pose-${side}-state`).textContent = !valid ? "NO SAMPLE" : fresh ? "LIVE" : "LAST SAMPLE";
+      $(`pose-${side}-empty`).hidden = valid;
+      model.viewer.setPoses(
+        valid && side === "follower" ? sample.values : null,
+        valid && side === "leader" ? sample.values : null,
+      );
+      model.values.forEach((element, index) => {
+        element.textContent = valid
+          ? `${sample.values[JOINTS[index].key].toFixed(1)} ${index === 5 ? "/ 100" : "deg"}`
+          : "--";
+      });
+    }
     JOINTS.forEach((joint, index) => {
       const key = joint.key;
       const limits = (sample) => sample?.limits?.[key]
         ? `${sample.limits[key].min}..${sample.limits[key].max}` : "--";
       const torque = (sample) => typeof sample?.torque?.[key] === "boolean"
-        ? sample.torque[key] ? "ON" : "off" : "--";
+        ? sample.torque[key] ? "V" : "X" : "--";
       const delta = Number.isFinite(leader?.values?.[key]) && Number.isFinite(follower?.values?.[key])
         ? leader.values[key] - follower.values[key] : null;
       const values = [
@@ -59,12 +103,6 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
     const age = (sample) => sample
       ? `${Math.max(0, Math.round(Date.now() - sample.sampled_at * 1000))} ms old` : "NO SAMPLE";
     $("pose-sample-age").textContent = `LEADER / ${age(leader)}   FOLLOWER / ${age(follower)}`;
-    const torqueSummary = (side) => {
-      const torque = status[`${side}_torque`];
-      return `${side}: ${torque ? JOINTS.map((joint, index) =>
-        `J${index + 1} ${torque.before[joint.key] ? "ON" : "off"} -> ${torque.after[joint.key] ? "ON" : "off"}`).join(", ") : "not read"}`;
-    };
-    $("pose-torque-summary").textContent = `Torque at monitor start (unchanged) - ${torqueSummary("leader")}; ${torqueSummary("follower")}`;
     const command = status.command;
     if (command) {
       $("pose-command-result").textContent = `#${command.command_id} / J${command.joint_id ?? "?"}: ${command.state || command.type}`
@@ -99,7 +137,7 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
 
   $("pose-start").addEventListener("click", async () => {
     if (await action("/api/pose/start", {})) {
-      $("pose-message").textContent = "Monitor requested. Startup preserves torque; commands affect only the follower.";
+      $("pose-message").textContent = "Monitor started. Commands affect only the follower.";
     }
   });
   $("pose-stop").addEventListener("click", () => action("/api/pose/stop"));

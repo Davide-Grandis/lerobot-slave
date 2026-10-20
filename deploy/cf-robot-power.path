@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for an authenticated cf-robot power request
+
+[Path]
+PathExists=/var/lib/cf-robot/power-request
+Unit=cf-robot-power.service
+
+[Install]
+WantedBy=multi-user.target

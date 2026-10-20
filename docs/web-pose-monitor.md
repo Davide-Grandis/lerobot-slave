@@ -40,11 +40,24 @@ public does not change the separate Pi hostname's authentication requirements.
 
 ## Readings And Commands
 
+Pairing is the first panel below the page title, above the tabs, and is shared
+by teleoperation and pose monitoring. Pose Monitor is the default tab.
+Two equal-sized 3D arm views sit below the diagnostics panel: leader on the
+left and follower on the right (stacked on mobile). Each view uses its own
+measured joint values, including gripper opening. Drag to orbit and scroll
+to zoom. Missing samples show a waiting state; stale or stopped samples are
+marked as last-known poses. The models use URDF joint frames and simplified
+geometry, not CAD meshes or a camera image.
+
+The camera and session controls remain in the Teleoperation tab. Monitoring
+alone does not request camera frames. The shared software stop is available
+above both tabs.
+
 The table shows all six joints, leader action values, measured follower values,
 leader-minus-follower deltas, raw encoder counts, per-arm MIN/MAX limits, and
 current per-joint torque states. J1-J5 values are degrees; J6 is normalized
-0-100. Encoder readings and limits are raw ticks. Sample ages identify stale
-readings; torque at startup is reported without changing it.
+0-100. Encoder readings and limits are raw ticks. Torque is shown per joint as
+`V` (enabled) or `X` (disabled). Sample ages identify stale readings.
 
 The follower command form supports:
 

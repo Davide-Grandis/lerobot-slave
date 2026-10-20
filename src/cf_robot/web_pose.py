@@ -44,8 +44,8 @@ class BrowserPoseMonitor:
         self.pending_since = None
         self.status = {
             "state": "connecting", "error": None,
-            "leader": None, "follower": None, "leader_torque": None,
-            "follower_torque": None, "command": None, "command_pending": False,
+            "leader": None, "follower": None,
+            "command": None, "command_pending": False,
         }
         self.task = asyncio.create_task(self.run())
 
@@ -58,8 +58,6 @@ class BrowserPoseMonitor:
         kind = message.get("type")
         if kind == "pose_sample" and message.get("side") in ("leader", "follower"):
             self.status[message["side"]] = message
-        elif kind in ("leader_torque", "follower_torque"):
-            self.status[kind] = message
         elif kind in ("command_queued", "command_progress", "command_result"):
             self.status["command"] = message
             if kind == "command_result" and message.get("command_id") == self.command_id:
