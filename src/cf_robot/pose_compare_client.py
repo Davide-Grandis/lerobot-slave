@@ -11,7 +11,6 @@ import sys
 import threading
 import time
 import termios
-import tty
 from urllib.parse import urlsplit, urlunsplit
 
 from websockets.asyncio.client import connect
@@ -122,14 +121,28 @@ class TerminalInput:
         self.loop = loop
         self.fd = sys.stdin.fileno()
         self.original = termios.tcgetattr(self.fd)
+        self.restore = [*self.original]
+        self.restore[6] = list(self.original[6])
+        # Recover a usable shell mode if an earlier raw-mode run was interrupted.
+        if not self.restore[1] & termios.OPOST:
+            self.restore[1] |= termios.OPOST
+            if hasattr(termios, "ONLCR"):
+                self.restore[1] |= termios.ONLCR
+            self.restore[3] |= termios.ECHO | termios.ICANON | termios.ISIG
+            if hasattr(termios, "IEXTEN"):
+                self.restore[3] |= termios.IEXTEN
         self.buffer = ""
         self.lines = asyncio.Queue()
         self.changed = asyncio.Event()
         self.stop_requested = asyncio.Event()
-        # Cbreak keeps OPOST/ONLCR enabled, so printed newlines still start at column 0.
-        tty.setcbreak(self.fd, termios.TCSADRAIN)
         attributes = termios.tcgetattr(self.fd)
+        attributes[3] &= ~termios.ICANON
         attributes[3] &= ~termios.ECHO
+        attributes[1] |= termios.OPOST
+        if hasattr(termios, "ONLCR"):
+            attributes[1] |= termios.ONLCR
+        attributes[6][termios.VMIN] = 1
+        attributes[6][termios.VTIME] = 0
         termios.tcsetattr(self.fd, termios.TCSADRAIN, attributes)
         loop.add_reader(self.fd, self._read_ready)
 
@@ -153,7 +166,7 @@ class TerminalInput:
 
     def close(self):
         self.loop.remove_reader(self.fd)
-        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.original)
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.restore)
         sys.stdout.write("\n")
         sys.stdout.flush()
 
