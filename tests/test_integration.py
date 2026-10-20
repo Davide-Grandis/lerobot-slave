@@ -3,6 +3,7 @@
 import asyncio
 import os
 from pathlib import Path
+import queue
 import subprocess
 import sys
 import tempfile
@@ -223,17 +224,41 @@ class OriginTests(unittest.TestCase):
                 self.assertFalse(client.get("/health").json()["maintenance_busy"])
 
     def test_pose_monitor_wss_streams_read_only_follower_samples(self):
-        def fake_monitor(port, arm_id, stop, publish):
+        def fake_monitor(
+            port, arm_id, stop, publish, release_torque, commands, command_busy
+        ):
+            publish({
+                "type": "follower_torque",
+                "before": {joint: True for joint in JOINTS},
+                "after": {joint: False for joint in JOINTS}
+                if release_torque
+                else {joint: True for joint in JOINTS},
+            })
             publish(
                 {
                     "type": "pose_sample",
                     "side": "follower",
                     "values": {joint: 1.0 for joint in JOINTS},
                     "raw": {joint: 2000 for joint in JOINTS},
+                    "torque": {joint: not release_torque for joint in JOINTS},
                     "sampled_at": 1.0,
                 }
             )
-            stop.wait(timeout=1)
+            while not stop.is_set():
+                try:
+                    command = commands.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                command_busy.set()
+                publish(
+                    {
+                        "type": "command_result",
+                        "command_id": command["command_id"],
+                        "joint_id": command["joint_id"],
+                        "state": "succeeded",
+                    }
+                )
+                command_busy.clear()
 
         with patch("cf_robot.follower.stream_follower_pose", side_effect=fake_monitor):
             app = create_app(
@@ -244,13 +269,42 @@ class OriginTests(unittest.TestCase):
             )
             with TestClient(app) as client:
                 with client.websocket_connect("/monitor", headers=self.headers) as socket:
-                    socket.send_json({"version": 1, "type": "start"})
-                    self.assertEqual(socket.receive_json()["type"], "monitor_started")
+                    socket.send_json(
+                        {"version": 1, "type": "start", "release_torque": True}
+                    )
+                    self.assertEqual(
+                        socket.receive_json()["type"],
+                        "torque_release_confirmation_required",
+                    )
+                    socket.send_json(
+                        {"version": 1, "type": "confirm_torque_release"}
+                    )
+                    started = socket.receive_json()
+                    self.assertEqual(started["type"], "monitor_started")
+                    self.assertTrue(started["release_torque"])
+                    torque = socket.receive_json()
+                    self.assertEqual(torque["type"], "follower_torque")
+                    self.assertTrue(torque["before"]["gripper.pos"])
+                    self.assertFalse(torque["after"]["gripper.pos"])
                     sample = socket.receive_json()
                     self.assertEqual(sample["type"], "pose_sample")
                     self.assertEqual(sample["side"], "follower")
                     self.assertEqual(sample["values"]["wrist_flex.pos"], 1.0)
                     self.assertTrue(client.get("/health").json()["monitor_busy"])
+                    socket.send_json(
+                        {
+                            "version": 1,
+                            "type": "command",
+                            "command_id": 1,
+                            "joint_id": 3,
+                            "mode": "degrees",
+                            "value": -120.34,
+                        }
+                    )
+                    self.assertEqual(socket.receive_json()["type"], "command_queued")
+                    result = socket.receive_json()
+                    self.assertEqual(result["type"], "command_result")
+                    self.assertEqual(result["joint_id"], 3)
                     socket.send_json({"version": 1, "type": "stop"})
                     self.assertEqual(socket.receive_json()["type"], "monitor_finished")
                 self.assertFalse(client.get("/health").json()["monitor_busy"])

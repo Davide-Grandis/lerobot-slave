@@ -47,11 +47,11 @@ def _read_raw(robot, register, motor):
     return int(robot.bus.read(register, motor, normalize=False, num_retry=2))
 
 
-def _read_limits(robot):
+def read_servo_limits(bus):
     limits = {}
     for joint, motor in zip(JOINTS, MOTORS, strict=True):
-        low = _read_raw(robot, "Min_Position_Limit", motor)
-        high = _read_raw(robot, "Max_Position_Limit", motor)
+        low = int(bus.read("Min_Position_Limit", motor, normalize=False, num_retry=2))
+        high = int(bus.read("Max_Position_Limit", motor, normalize=False, num_retry=2))
         if low > high:
             low, high = high, low
         if (
@@ -99,7 +99,7 @@ def read_limits_and_pose(port, arm_id):
         # Read the same raw registers as the SDK without changing torque state.
         bus.connect()
         connected = True
-        limits = _read_limits(robot)
+        limits = read_servo_limits(bus)
         current = _read_present_positions(robot)
         return {
             "record": _write_limits_record(limits),
@@ -123,7 +123,7 @@ def move_to_home(port, arm_id, planned_limits, planned_current, home, speed_perc
         robot.config.disable_torque_on_disconnect = False
         robot.connect(calibrate=False)
         connected = True
-        limits = _read_limits(robot)
+        limits = read_servo_limits(robot.bus)
         if limits != planned_limits:
             raise RuntimeError("servo limits changed since the home preview; request a new preview")
         target = calculate_home_positions(limits)

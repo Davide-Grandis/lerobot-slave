@@ -91,10 +91,13 @@ the Pi.
   It reads raw MIN/MAX registers through LeRobot, stores them under
   `/var/lib/cf-robot`, and requires a separate confirmation before the fixed
   SDK-style home pose. It accepts no client-supplied serial path or raw target.
-- `/monitor` streams normalized follower readback and raw servo counts. It opens
-  the bus for reads only, without calling the robot configure/torque methods or
-  writing `Goal_Position`; it blocks control, calibration, maintenance, and
-  update operations while connected.
+- `/monitor` streams normalized follower readback, raw servo counts, servo
+  limits, and torque state. It does not configure motors. After explicit
+  confirmation it can disable torque on enabled servos; `--keep-torque`
+  preserves their state. It accepts only validated per-joint tick/degree/
+  gripper-percent targets and `TE`/`TD` torque commands, with configured
+  limits and bounded single-joint steps. It blocks control, calibration,
+  maintenance, and update operations while connected.
 
 ## Trust boundaries
 

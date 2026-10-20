@@ -8,6 +8,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import queue
 import subprocess
 import sys
 import threading
@@ -20,13 +21,12 @@ import uvicorn
 from cf_robot.control import FollowerSession
 from cf_robot.hardware import make_camera, make_follower
 from cf_robot.protocol import VERSION, validate_command
-from cf_robot.pose_monitor import stream_follower_pose
+from cf_robot.pose_monitor import stream_follower_pose, validate_pose_command
 from cf_robot.servo_maintenance import (
     calculate_home_positions,
     move_to_home,
     read_limits_and_pose,
 )
-from cf_robot.pose_monitor import stream_follower_pose
 
 LOG = logging.getLogger(__name__)
 UPDATE_REQUEST = Path("/var/lib/cf-robot/update-request")
@@ -638,7 +638,13 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             return
         except WebSocketDisconnect:
             return
-        if request != {"version": VERSION, "type": "start"}:
+        if (
+            not isinstance(request, dict)
+            or request.get("version") != VERSION
+            or request.get("type") != "start"
+            or set(request) != {"version", "type", "release_torque"}
+            or not isinstance(request.get("release_torque"), bool)
+        ):
             await reject("unsupported pose-monitor request")
             return
         if (
@@ -654,8 +660,41 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             await reject("stop the follower control session before monitoring")
             return
 
+        release_torque = request["release_torque"]
+        if release_torque:
+            await ws.send_json({"type": "torque_release_confirmation_required"})
+            try:
+                confirmation = json.loads(
+                    await asyncio.wait_for(ws.receive_text(), timeout=60)
+                )
+            except asyncio.TimeoutError:
+                await ws.send_json({"type": "monitor_cancelled", "reason": "confirmation timed out"})
+                await ws.close()
+                return
+            except json.JSONDecodeError:
+                await reject("invalid torque-release confirmation")
+                return
+            except WebSocketDisconnect:
+                return
+            if confirmation != {"version": VERSION, "type": "confirm_torque_release"}:
+                await ws.send_json({"type": "monitor_cancelled"})
+                await ws.close()
+                return
+            if (
+                monitor_requested
+                or maintenance_requested
+                or calibration_requested
+                or update_requested
+                or UPDATE_REQUEST.exists()
+                or control_lock.locked()
+            ):
+                await reject("follower became busy; retry when no session is active")
+                return
+
         monitor_requested = True
         stop = threading.Event()
+        commands = queue.Queue(maxsize=1)
+        command_busy = threading.Event()
         client_disconnected = False
         worker_task = None
         receive_task = None
@@ -668,13 +707,23 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                 loop.call_soon_threadsafe(samples.put_nowait, sample)
 
             worker_task = asyncio.create_task(
-                asyncio.to_thread(stream_follower_pose, port, arm_id, stop, publish)
+                asyncio.to_thread(
+                    stream_follower_pose,
+                    port,
+                    arm_id,
+                    stop,
+                    publish,
+                    release_torque,
+                    commands,
+                    command_busy,
+                )
             )
             await ws.send_json(
                 {
                     "type": "monitor_started",
                     "version": VERSION,
                     "interval_s": 0.1,
+                    "release_torque": release_torque,
                 }
             )
             receive_task = asyncio.create_task(ws.receive_text())
@@ -700,8 +749,39 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                         stop.set()
                         break
                     if message != {"version": VERSION, "type": "stop"}:
-                        await ws.send_json({"type": "error", "message": "only stop is accepted while monitoring"})
-                        stop.set()
+                        try:
+                            command = validate_pose_command(message)
+                        except (TypeError, ValueError) as exc:
+                            await ws.send_json(
+                                {
+                                    "type": "command_result",
+                                    "command_id": (
+                                        message.get("command_id")
+                                        if isinstance(message, dict)
+                                        else None
+                                    ),
+                                    "state": "rejected",
+                                    "message": str(exc),
+                                }
+                            )
+                        else:
+                            if command_busy.is_set() or commands.full():
+                                await ws.send_json(
+                                    {
+                                        "type": "command_result",
+                                        "command_id": command["command_id"],
+                                        "state": "rejected",
+                                        "message": "another joint command is still running",
+                                    }
+                                )
+                            else:
+                                commands.put_nowait(command)
+                                await ws.send_json(
+                                    {
+                                        "type": "command_queued",
+                                        "command_id": command["command_id"],
+                                    }
+                                )
                         receive_task = asyncio.create_task(ws.receive_text())
                         continue
                     stop.set()

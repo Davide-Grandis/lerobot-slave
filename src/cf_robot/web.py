@@ -21,6 +21,7 @@ from websockets.asyncio.client import connect
 from cf_robot.auth import access_headers
 from cf_robot.operator_session import OperatorSession
 from cf_robot.protocol import validate_action
+from cf_robot.web_pose import BrowserPoseMonitor, install_pose_routes
 
 LOG = logging.getLogger(__name__)
 VIDEO_STALE_S = 1.5
@@ -29,6 +30,7 @@ ASSETS = {
     "app.js": ("text/javascript; charset=utf-8", "operator/app.js"),
     "app.css": ("text/css; charset=utf-8", "operator/app.css"),
     "arm-viewer.js": ("text/javascript; charset=utf-8", "operator/arm-viewer.js"),
+    "pose-monitor.js": ("text/javascript; charset=utf-8", "operator/pose-monitor.js"),
 }
 
 
@@ -77,6 +79,7 @@ def create_app(
         "running": False,
     }
     video_frame = {"data": None, "received_at": None}
+    pose_monitor = BrowserPoseMonitor(url, port, arm_id, heartbeat_timeout)
 
     def origin_allowed(origin, host):
         if not origin:
@@ -99,6 +102,12 @@ def create_app(
             supplied = request.headers.get("x-cf-robot-bridge", "")
             if not hmac.compare_digest(supplied, local_bridge_token):
                 raise HTTPException(status_code=403, detail="controller pairing code required")
+
+    install_pose_routes(
+        app, pose_monitor, require_origin,
+        lambda: task is not None and not task.done(),
+        lambda: estop_latched,
+    )
 
     @app.middleware("http")
     async def local_network_cors(request: Request, call_next):
@@ -256,6 +265,8 @@ def create_app(
             raise HTTPException(status_code=409, detail="re-arm explicitly after inspecting the robot")
         if task is not None and not task.done():
             raise HTTPException(status_code=409, detail="session already running")
+        if pose_monitor.running:
+            raise HTTPException(status_code=409, detail="stop the pose monitor before teleoperation")
         if not legacy_runner:
             try:
                 start_body = await request.json()
@@ -269,6 +280,8 @@ def create_app(
                 or time.time() - video_frame["received_at"] > VIDEO_STALE_S
             ):
                 raise HTTPException(status_code=409, detail="wait for a live follower camera before starting")
+        if pose_monitor.running or (task is not None and not task.done()):
+            raise HTTPException(status_code=409, detail="another hardware session is running")
         stop_event = asyncio.Event()
         last_heartbeat = time.monotonic()
         last_browser_frame_at = time.monotonic() if not legacy_runner else None
@@ -408,6 +421,9 @@ def create_app(
 
     @app.on_event("shutdown")
     async def shutdown():
+        pose_monitor.stop()
+        if pose_monitor.task is not None:
+            await pose_monitor.task
         video_stop.set()
         if video_task is not None:
             video_task.cancel()
