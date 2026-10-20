@@ -315,10 +315,10 @@ sudo systemctl enable --now cf-robot-update.path
 ```
 
 This is a one-time privileged setup. The existing Access application protects
-the entire hostname, including `/update` and `/calibrate`, so no additional
-Tunnel route is needed. After this setup, ordinary code and dependency updates
-and interactive follower calibration can be requested from the Mac over WSS
-without SSH.
+the entire hostname, including `/update`, `/calibrate`, and `/maintenance`, so
+no additional Tunnel route is needed. After this setup, code and dependency
+updates, interactive follower calibration, servo-limit reads, and the fixed
+go-home operation can be requested from the Mac over WSS without SSH.
 
 Check `journalctl -u cf-robot-follower -f` for failures. Confirm both this
 service and the separately installed `cloudflared` service are enabled and
@@ -463,9 +463,9 @@ console and `wss://robot.example.com/control` for CLI control; video uses
 Configure Access for the entire hostname before operating the arm:
 
 1. Create a Cloudflare Access **self-hosted application** covering the whole
-   hostname, including `/health`, `/control`, `/video`, `/update`, and
-   `/calibrate`. Create a service token and a **Service Auth** policy allowing
-   only that token.
+   hostname, including `/health`, `/control`, `/video`, `/update`,
+   `/calibrate`, and `/maintenance`. Create a service token and a **Service
+   Auth** policy allowing only that token.
 
 2. Copy the token's client ID and secret for entry into the laptop's private
    controller config file. The secret is shown once; never put it in a URL,
@@ -573,7 +573,9 @@ Verify that the WSS update, parking, and follower calibration commands are insta
 ls .venv/bin/cf-robot-update \
   .venv/bin/cf-robot-parking-record \
   .venv/bin/cf-robot-parking-set \
-  .venv/bin/cf-robot-follower-calibrate
+  .venv/bin/cf-robot-follower-calibrate \
+  .venv/bin/cf-robot-follower-limits \
+  .venv/bin/cf-robot-follower-home
 ```
 
 #### CLI (phase 1)
@@ -742,7 +744,7 @@ start control.
 | `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` | Laptop environment only | Access service token used for public `wss://` requests; never place these on the Pi or in browser code. |
 | `CF_ROBOT_OPERATOR_ORIGIN` | Laptop environment or `cf-robot-web --operator-origin` | Exact HTTPS origin allowed to pair with the loopback controller agent. |
 | `CF_ROBOT_BRIDGE_TOKEN` | Optional laptop environment | Pairing code for the hosted UI; if unset, a one-run code is generated and printed locally. Never put it in D1 or a URL. |
-| `CF_ROBOT_CONTROL_URL` | Laptop `controller.env` | Public WSS control URL used by teleoperation, parking, Pi updates, and follower calibration, for example `wss://robot.example.com/control`. |
+| `CF_ROBOT_CONTROL_URL` | Laptop `controller.env` | Public WSS control URL used by teleoperation, parking, Pi updates, follower calibration, servo-limit reads, and go-home, for example `wss://robot.example.com/control`. |
 | `HF_HOME` | Pi service unit and calibration command | LeRobot/Hugging Face data directory for the `robot` user. |
 | `--listen-port` | Pi follower CLI | Loopback HTTP/WebSocket port, default `8765`; update Tunnel origin if changed. |
 | `--camera-width`, `--camera-height`, `--camera-fps` | Pi follower CLI | Video capture defaults `640`, `480`, `10`; fps must be 1-30. Update the unit if changing them. |
@@ -750,8 +752,8 @@ start control.
 | `--listen-port` | Laptop web CLI | Loopback controller API port, default `8080`. |
 | `--operator-origin` | Laptop web CLI | Exact HTTPS origin of the Cloudflare-hosted operator app. |
 
-The Pi offers `GET /health`, `WS /control`, `WS /video`, `WS /update`, and
-`WS /calibrate` behind the same
+The Pi offers `GET /health`, `WS /control`, `WS /video`, `WS /update`,
+`WS /calibrate`, and `WS /maintenance` behind the same
 Access hostname. The laptop agent listens only on loopback and exposes the
 operator UI plus status, video-frame, start/stop, emergency-stop, mode, leader,
 manual-jog, and heartbeat APIs. The hosted page polls measured state and the

@@ -60,6 +60,38 @@ during teleoperation. The Pi-local
 `/opt/cf-robot/scripts/calibrate-follower.sh` helper remains available as a
 local/SSH fallback.
 
+### Servo limits and SDK-style home
+
+Read the follower's configured servo limit registers over WSS:
+
+```sh
+.venv/bin/cf-robot-follower-limits
+```
+
+The raw MIN/MAX tick values are stored on the Pi at
+`/var/lib/cf-robot/servo-limits/so101_follower.json` and on the Mac at
+`~/.config/cf-robot/follower-servo-limits.json`. This reads existing servo
+registers; it does not calibrate or change them.
+
+The SDK-compatible home command fetches fresh limits and current positions,
+shows its raw-tick targets, and requires you to type `MOVE` before it moves:
+
+```sh
+.venv/bin/cf-robot-follower-home
+```
+
+Its pose is shoulder-pan midpoint, shoulder-lift minimum, elbow-flex maximum,
+wrist-flex minimum, wrist-roll one quarter of its range above minimum, and
+gripper minimum. It sets servo speed to 10% for the move, waits for measured
+positions to settle, then restores the requested speed (default 75%; override
+with `--speed-percent`) and leaves servo torque enabled to hold the pose. This
+is a fixed home pose, not a collision-aware trajectory; the SDK's register
+limits may be factory defaults, so inspect the displayed raw limits and targets
+before confirming. All six targets are issued in SDK order and can move at the
+same time. Clear the workspace, verify live video, and keep the physical
+emergency stop accessible. Invalid servo limits or a changed pose after the
+preview cause the command to abort.
+
 ## Record or Set the Follower Parking Pose
 
 These Mac commands use the authenticated WSS `/control` route. They require

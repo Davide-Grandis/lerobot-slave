@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -19,6 +20,11 @@ import uvicorn
 from cf_robot.control import FollowerSession
 from cf_robot.hardware import make_camera, make_follower
 from cf_robot.protocol import VERSION, validate_command
+from cf_robot.servo_maintenance import (
+    calculate_home_positions,
+    move_to_home,
+    read_limits_and_pose,
+)
 
 LOG = logging.getLogger(__name__)
 UPDATE_REQUEST = Path("/var/lib/cf-robot/update-request")
@@ -45,6 +51,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
     video_lock = asyncio.Lock()
     update_requested = UPDATE_REQUEST.exists()
     calibration_requested = False
+    maintenance_requested = False
     follower_factory = factory or (lambda: make_follower(port, arm_id))
     camera_factory = camera_factory or (lambda: make_camera(camera_device, width, height, video_fps))
 
@@ -55,6 +62,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             "version": VERSION,
             "control_busy": control_lock.locked(),
             "calibration_busy": calibration_requested,
+            "maintenance_busy": maintenance_requested,
             "update": read_update_status(),
         }
 
@@ -63,11 +71,11 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
         if not hmac.compare_digest(ws.headers.get("x-cf-robot-key", ""), origin_key):
             await ws.close(code=1008)
             return
-        if update_requested or calibration_requested:
+        if update_requested or calibration_requested or maintenance_requested:
             await ws.close(code=1013, reason="follower maintenance in progress")
             return
         await ws.accept()
-        if update_requested or calibration_requested:
+        if update_requested or calibration_requested or maintenance_requested:
             await ws.close(code=1013, reason="follower maintenance in progress")
             return
         if control_lock.locked():
@@ -177,8 +185,8 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
         if update_requested or UPDATE_REQUEST.exists():
             await reject("an update is already queued")
             return
-        if calibration_requested:
-            await reject("follower calibration is in progress")
+        if calibration_requested or maintenance_requested:
+            await reject("follower maintenance is in progress")
             return
         if control_lock.locked() or video_lock.locked():
             await reject("stop control and video sessions before updating")
@@ -204,6 +212,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             if (
                 update_requested
                 or calibration_requested
+                or maintenance_requested
                 or UPDATE_REQUEST.exists()
                 or control_lock.locked()
                 or video_lock.locked()
@@ -250,7 +259,12 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
         if message != {"version": VERSION, "type": "start"}:
             await reject("unsupported calibration request")
             return
-        if calibration_requested or update_requested or UPDATE_REQUEST.exists():
+        if (
+            calibration_requested
+            or maintenance_requested
+            or update_requested
+            or UPDATE_REQUEST.exists()
+        ):
             await reject("follower maintenance is already in progress")
             return
         if control_lock.locked():
@@ -406,6 +420,189 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                 with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
                     await output_task
             calibration_requested = False
+            try:
+                await ws.close()
+            except (RuntimeError, OSError, WebSocketDisconnect):
+                pass
+
+    @app.websocket("/maintenance")
+    async def maintenance(ws: WebSocket):
+        nonlocal maintenance_requested
+        if not hmac.compare_digest(ws.headers.get("x-cf-robot-key", ""), origin_key):
+            await ws.close(code=1008)
+            return
+        await ws.accept()
+
+        async def reject(message):
+            await ws.send_json({"type": "error", "message": message})
+            await ws.close(code=1008)
+
+        try:
+            raw = await asyncio.wait_for(ws.receive_text(), timeout=10)
+            request = json.loads(raw)
+        except asyncio.TimeoutError:
+            await reject("timed out waiting for follower maintenance request")
+            return
+        except json.JSONDecodeError:
+            await reject("invalid follower maintenance request")
+            return
+        except WebSocketDisconnect:
+            return
+
+        read_request = {"version": VERSION, "type": "read_limits"}
+        is_read = request == read_request
+        is_home = (
+            isinstance(request, dict)
+            and request.get("version") == VERSION
+            and request.get("type") == "go_home"
+            and set(request) == {"version", "type", "speed_percent"}
+            and isinstance(request.get("speed_percent"), int)
+            and not isinstance(request.get("speed_percent"), bool)
+            and 1 <= request["speed_percent"] <= 100
+        )
+        if not (is_read or is_home):
+            await reject("unsupported follower maintenance request")
+            return
+        if (
+            maintenance_requested
+            or calibration_requested
+            or update_requested
+            or UPDATE_REQUEST.exists()
+        ):
+            await reject("follower maintenance is already in progress")
+            return
+        if control_lock.locked():
+            await reject("stop the follower control session before maintenance")
+            return
+
+        maintenance_requested = True
+        move_task = None
+        receive_task = None
+        progress_task = None
+        cancelled = threading.Event()
+        client_disconnected = False
+        try:
+            snapshot = await asyncio.to_thread(read_limits_and_pose, port, arm_id)
+            record = snapshot["record"]
+            if is_read:
+                await ws.send_json(
+                    {
+                        "type": "servo_limits",
+                        "record": record,
+                        "current": snapshot["current"],
+                    }
+                )
+                return
+
+            home = calculate_home_positions(record["limits"])
+            speed_percent = request["speed_percent"]
+            await ws.send_json(
+                {
+                    "type": "home_plan",
+                    "record": record,
+                    "current": snapshot["current"],
+                    "target": home,
+                    "speed_percent": speed_percent,
+                }
+            )
+            try:
+                confirm = json.loads(await asyncio.wait_for(ws.receive_text(), timeout=120))
+            except asyncio.TimeoutError:
+                await ws.send_json({"type": "home_cancelled", "reason": "confirmation timed out"})
+                return
+            except json.JSONDecodeError:
+                await reject("invalid go-home confirmation")
+                return
+            except WebSocketDisconnect:
+                client_disconnected = True
+                return
+            if confirm == {"version": VERSION, "type": "cancel_home"}:
+                await ws.send_json({"type": "home_cancelled"})
+                return
+            if confirm != {"version": VERSION, "type": "confirm_home"}:
+                await reject("unsupported go-home confirmation")
+                return
+
+            loop = asyncio.get_running_loop()
+            progress_queue = asyncio.Queue()
+
+            def report_progress(message):
+                loop.call_soon_threadsafe(progress_queue.put_nowait, message)
+
+            move_task = asyncio.create_task(
+                asyncio.to_thread(
+                    move_to_home,
+                    port,
+                    arm_id,
+                    record["limits"],
+                    snapshot["current"],
+                    home,
+                    speed_percent,
+                    cancelled,
+                    report_progress,
+                )
+            )
+            receive_task = asyncio.create_task(ws.receive_text())
+            progress_task = asyncio.create_task(progress_queue.get())
+            while not move_task.done():
+                done, _ = await asyncio.wait(
+                    {move_task, receive_task, progress_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if progress_task in done:
+                    await ws.send_json(progress_task.result())
+                    progress_task = asyncio.create_task(progress_queue.get())
+                if receive_task in done:
+                    try:
+                        message = json.loads(receive_task.result())
+                    except json.JSONDecodeError:
+                        cancelled.set()
+                        await ws.send_json({"type": "error", "message": "invalid maintenance message"})
+                        receive_task = asyncio.create_task(ws.receive_text())
+                        continue
+                    except WebSocketDisconnect:
+                        client_disconnected = True
+                        cancelled.set()
+                        break
+                    if message != {"version": VERSION, "type": "cancel_home"}:
+                        cancelled.set()
+                        await ws.send_json({"type": "error", "message": "only cancel_home is accepted while moving"})
+                        receive_task = asyncio.create_task(ws.receive_text())
+                        continue
+                    cancelled.set()
+                    receive_task = asyncio.create_task(ws.receive_text())
+
+            result = await move_task
+            if not client_disconnected:
+                while not progress_queue.empty():
+                    await ws.send_json(progress_queue.get_nowait())
+                await ws.send_json({"type": "home_finished", **result})
+        except WebSocketDisconnect:
+            client_disconnected = True
+            cancelled.set()
+            if move_task is not None:
+                await move_task
+        except Exception as exc:
+            LOG.exception("Follower servo maintenance failed")
+            if move_task is not None and not move_task.done():
+                cancelled.set()
+                with contextlib.suppress(Exception):
+                    await move_task
+            if not client_disconnected:
+                try:
+                    await ws.send_json({"type": "error", "message": str(exc)})
+                except (RuntimeError, OSError, WebSocketDisconnect):
+                    pass
+        finally:
+            if receive_task is not None and not receive_task.done():
+                receive_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
+                    await receive_task
+            if progress_task is not None and not progress_task.done():
+                progress_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await progress_task
+            maintenance_requested = False
             try:
                 await ws.close()
             except (RuntimeError, OSError, WebSocketDisconnect):

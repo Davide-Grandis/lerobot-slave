@@ -172,6 +172,56 @@ class OriginTests(unittest.TestCase):
                 self.assertEqual(processes[0].stdin.inputs, [b"c\n"])
                 self.assertFalse(client.get("/health").json()["calibration_busy"])
 
+    def test_servo_maintenance_wss_reads_limits_and_confirms_home(self):
+        limits = {
+            joint: {"min": 100, "max": 3900}
+            for joint in JOINTS
+        }
+        current = {joint: 2000 for joint in JOINTS}
+        record = {
+            "version": 1,
+            "arm_id": "so101_follower",
+            "units": "raw_servo_ticks",
+            "read_at": 1.0,
+            "limits": limits,
+        }
+
+        def fake_move(port, arm_id, planned_limits, planned_current, home, speed, cancelled, report):
+            report({"type": "home_progress", "state": "moving", "target": home})
+            return {"state": "succeeded", "target": home, "present": home}
+
+        with patch(
+            "cf_robot.follower.read_limits_and_pose",
+            return_value={"record": record, "current": current},
+        ), patch("cf_robot.follower.move_to_home", side_effect=fake_move):
+            app = create_app(
+                "/dev/fake",
+                "so101_follower",
+                factory=FakeFollower,
+                origin_key=self.key,
+            )
+            with TestClient(app) as client:
+                with client.websocket_connect("/maintenance", headers=self.headers) as socket:
+                    socket.send_json({"version": 1, "type": "read_limits"})
+                    limits_message = socket.receive_json()
+                self.assertEqual(limits_message["type"], "servo_limits")
+                self.assertEqual(limits_message["record"]["limits"], limits)
+
+                with client.websocket_connect("/maintenance", headers=self.headers) as socket:
+                    socket.send_json(
+                        {"version": 1, "type": "go_home", "speed_percent": 75}
+                    )
+                    plan = socket.receive_json()
+                    self.assertEqual(plan["type"], "home_plan")
+                    self.assertEqual(plan["current"], current)
+                    self.assertEqual(plan["target"]["shoulder_pan.pos"], 2000)
+                    socket.send_json({"version": 1, "type": "confirm_home"})
+                    messages = []
+                    while not messages or messages[-1]["type"] != "home_finished":
+                        messages.append(socket.receive_json())
+                self.assertEqual(messages[-1]["state"], "succeeded")
+                self.assertFalse(client.get("/health").json()["maintenance_busy"])
+
     def test_web_controls_require_same_origin(self):
         async def fake_runner(url, port, arm_id, fps, stop, on_status):
             on_status({"state": "running"})
