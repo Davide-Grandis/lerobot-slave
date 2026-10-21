@@ -40,6 +40,11 @@ public does not change the separate Pi hostname's authentication requirements.
 
 ## Readings And Commands
 
+For independent per-arm calibration inspection, physical validation captures,
+JSON export and guided calibration setting, see [Arm Calibration](arm-calibration.md).
+The arm selector supports leader-only (no follower connection), follower-only
+(no leader serial access) and both-arm sessions.
+
 Pairing is the first panel below the page title, above the tabs, and is shared
 by teleoperation and pose monitoring. Pose Monitor is the default tab.
 Two equal-sized 3D arm views sit below the diagnostics panel: leader on the
@@ -65,6 +70,9 @@ The follower command form supports:
 - J1-J5: degree targets.
 - J6: normalized 0-100 targets.
 - J1-J6: enable or disable torque on the selected follower joint only.
+
+Position commands additionally require a fresh sample and a consistent
+calibration inspection. Update both controller and Pi for this feature.
 
 Confirm the workspace/support checkbox for each command. The Pi validates the
 target, requires torque enabled for position moves, and applies its existing

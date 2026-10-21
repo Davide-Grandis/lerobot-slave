@@ -38,8 +38,17 @@ const sample = side => ({
   raw:Object.fromEntries(keys.map(k=>[k,2048])),
   torque:Object.fromEntries(keys.map(k=>[k,true])),
   limits:Object.fromEntries(keys.map(k=>[k,{min:100,max:3900}]))
+  ,calibration: {
+    state:'consistent',side,arm_id:side,port:'/dev/fake',lerobot_version:'test',
+    inspected_at:1,loaded_sha256:'test',validation_key:'test',warnings:[],
+    file:{path:'/test/calibration.json',matches_loaded:true},
+    joints:Object.fromEntries(keys.map((k,i)=>[k,{
+      id:i+1,mode:i===5?'range_0_100':'degrees',unit:i===5?'%':'deg',
+      state:'consistent',warnings:[],saved:null,live:null
+    }]))
+  }
 });
-let running = false, command = null;
+let running = false, command = null, sides = 'both', captures = [];
 window.fetch = async (url, options={}) => {
   const path = new URL(url,location.href).pathname;
   const reply = (payload,status=200) => new Response(JSON.stringify(payload),
@@ -51,7 +60,9 @@ window.fetch = async (url, options={}) => {
   }
   if (path === '/api/status') return reply(window.testControl);
   if (path === '/api/video/frame') { window.testVideoRequests++; return reply({},503); }
-  if (path === '/api/pose/start') { running=true; return reply({running}); }
+  if (path === '/api/pose/start') {
+    sides=JSON.parse(options.body).sides || 'both'; running=true; return reply({running});
+  }
   if (path === '/api/pose/stop') { running=false; return reply({running}); }
   if (path === '/api/pose/command') {
     const body = JSON.parse(options.body);
@@ -61,11 +72,17 @@ window.fetch = async (url, options={}) => {
     return reply({command_id:command.command_id});
   }
   if (path === '/api/pose/heartbeat') return reply({ok:true});
+  if (path === '/api/calibration/status') return reply({running:false,state:'idle'});
+  if (path === '/api/pose/capture') {
+    const body=JSON.parse(options.body);
+    captures.push({...body,observed:body.expected,error:0,passed:true,unit:'deg'});
+    return reply({ok:true});
+  }
   if (path === '/api/pose/status' && window.testPoseOffline) return reply({},503);
   if (path === '/api/pose/status') return reply({
     running,state:running?'ready':'idle',command_pending:false,
-    leader:running&&!window.testMissingLeader?sample('leader'):null,
-    follower:running?sample('follower'):null,command
+    leader:running&&sides!=='follower'&&!window.testMissingLeader?sample('leader'):null,
+    follower:running&&sides!=='leader'?sample('follower'):null,command,captures,analysis:[]
   });
   return reply({},401);
 };
@@ -213,6 +230,16 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                     await evaluate("document.getElementById('pose-start').click()")
                     await wait_for("document.getElementById('pose-state').textContent === 'READY'")
                     await wait_for("document.getElementById('pose-leader-model').dataset.state === 'live'")
+                    self.assertIn("File matches loaded: true", await evaluate(
+                        "document.getElementById('calibration-inspectors').textContent",
+                    ))
+                    await evaluate("""
+                      document.getElementById('calibration-capture-label').value='Measured reference';
+                      document.getElementById('calibration-expected').value='0';
+                      document.getElementById('calibration-capture-confirm').checked=true;
+                      document.getElementById('calibration-capture').click();
+                    """)
+                    await wait_for("document.getElementById('calibration-evidence').textContent.includes('within tolerance')")
                     self.assertTrue(await evaluate("""
                       document.getElementById('pose-follower-model').dataset.state === 'live' &&
                       document.getElementById('pairing-panel').getBoundingClientRect().bottom <
@@ -298,6 +325,16 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                             await evaluate("document.querySelector('.pose-arm-grid').scrollIntoView()")
                             image = await cdp("Page.captureScreenshot", {"format": "png"})
                             (directory / f"pose-{width}.png").write_bytes(base64.b64decode(image["data"]))
+                    await evaluate("document.getElementById('pose-stop').click()")
+                    await wait_for("document.getElementById('pose-state').textContent === 'IDLE'")
+                    await evaluate("""
+                      document.getElementById('pose-sides').value='leader';
+                      document.getElementById('pose-start').click();
+                    """)
+                    await wait_for("document.getElementById('pose-leader-model').dataset.state === 'live'")
+                    self.assertEqual(await evaluate(
+                        "document.getElementById('pose-follower-model').dataset.state",
+                    ), "waiting")
                     await evaluate("document.getElementById('pose-stop').click()")
                     await wait_for("document.getElementById('pose-state').textContent === 'IDLE'")
                     await evaluate("document.getElementById('teleop-tab').click()")

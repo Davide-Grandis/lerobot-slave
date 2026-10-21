@@ -143,6 +143,7 @@
           </div>
           <div class="pose-body">
             <div class="pose-start-controls">
+              <label>Inspect arms<select id="pose-sides"><option value="both">Both arms</option><option value="leader">Leader only / local USB</option><option value="follower">Follower only / Pi</option></select></label>
               <button class="button button-primary" id="pose-start" type="button" aria-describedby="pose-start-reason" disabled>Start monitoring</button>
               <button class="button button-quiet" id="pose-stop" type="button" disabled>Stop monitor / command</button>
             </div>
@@ -166,6 +167,57 @@
             </form>
             <p class="stop-warning">Position targets must be inside the servo's reported limits and require torque ON. The Pi applies bounded movement steps and reports completion or failure. Torque enable first holds the current position. No command changes the leader's torque.</p>
             <output id="pose-command-result" class="pose-command-result" aria-live="polite">No commands sent.</output>
+          </div>
+        </section>
+
+        <section class="panel pose-panel" aria-labelledby="calibration-heading">
+          <div class="panel-heading">
+            <div><span class="section-kicker">READ-ONLY / EACH ARM INDEPENDENTLY</span><h2 id="calibration-heading">Calibration inspector</h2></div>
+          </div>
+          <div class="pose-body">
+            <p class="stop-warning">Consistency is not physical validation. Saved ranges define conversion; live MIN/MAX are servo registers. Raw ticks already include the servo homing offset. Never apply it twice.</p>
+            <div class="calibration-grid" id="calibration-inspectors"></div>
+            <details class="calibration-guide">
+              <summary>How to validate an arm without the other arm</summary>
+              <p>Secure the arm and stop teleoperation. Inspect identity, units and saved/live warnings first. Use an independently measured joint angle relative to its parent link, not the rendered model or the other arm. A physical reference must follow the intended joint convention; do not assume an arbitrary straight pose is zero.</p>
+              <p>Capture at least three distinct, safe interior positions per joint, including a reference and a small positive movement. Check direction, scale and constant offset. Repeat in both directions to expose backlash. Do not force mechanical stops. Check gripper closed/intermediate/open separately: percent is fraction of its calibrated opening, not millimeters.</p>
+              <p>Move by hand only when safely supported and torque is already off. The leader is read-only here; this monitor never releases it automatically. Guided recalibration below can release torque.</p>
+            </details>
+            <form id="calibration-capture-form" class="pose-command-form">
+              <div><span class="section-kicker">PHYSICAL EVIDENCE / NO MOVEMENT</span><h3>Capture a checked pose</h3></div>
+              <label>Validation<select id="calibration-capture-side"><option value="leader">Leader independently</option><option value="follower">Follower independently</option><option value="both">Matched physical poses / comparison</option></select></label>
+              <label>Joint<select id="calibration-capture-joint"></select></label>
+              <label>Pose label<input id="calibration-capture-label" maxlength="80" required placeholder="Reference / measured +20"></label>
+              <label>Known value (deg / %)<input id="calibration-expected" type="number" step="any" required></label>
+              <label>Tolerance (deg / %)<input id="calibration-tolerance" type="number" min="0.01" max="100" step="any" value="2" required></label>
+              <label class="pose-confirm"><input id="calibration-capture-confirm" type="checkbox" required> I independently checked this physical pose, units and reference convention.</label>
+              <button class="button button-primary" id="calibration-capture" type="submit" disabled>Capture evidence</button>
+              <button class="button button-quiet" id="calibration-export" type="button" disabled>Export inspection + evidence</button>
+              <button class="button button-quiet" id="calibration-clear" type="button">Clear evidence...</button>
+            </form>
+            <output id="calibration-evidence" class="pose-command-result">No physical validation captured. Evidence is kept in this controller process until cleared or restarted; export to retain it.</output>
+          </div>
+        </section>
+        <section class="panel pose-panel" aria-labelledby="calibration-set-heading">
+          <div class="panel-heading">
+            <div><span class="section-kicker">EXPLICIT MAINTENANCE / ONE ARM ONLY</span><h2 id="calibration-set-heading">Set calibration</h2></div>
+            <span class="mono" id="calibration-state">IDLE</span>
+          </div>
+          <div class="pose-body">
+            <p class="stop-warning">Stop monitoring and teleoperation first. LeRobot's guided calibration may disable torque, change offsets/limits and overwrite the selected arm's calibration file. Someone must physically support and move that arm with an emergency stop available. The other arm is not calibrated. Export the inspector report first.</p>
+            <p class="stop-warning">At the existing-calibration prompt: Enter reapplies the saved calibration to the selected arm; type c to measure a new calibration. Follow LeRobot's actual prompts. This is not an automatic offset correction from captured poses. Cancellation can leave partially changed settings: inspect and recalibrate before resuming.</p>
+            <form id="calibration-start-form" class="pose-command-form">
+              <label>Arm<select id="calibration-set-side"><option value="leader">Leader / local Mac</option><option value="follower">Follower / remote Pi</option></select></label>
+              <label>Type CALIBRATE<input id="calibration-confirmation" autocomplete="off" required pattern="CALIBRATE"></label>
+              <button class="button button-primary" id="calibration-start" type="submit" disabled>Start guided calibration</button>
+              <button class="button button-quiet" id="calibration-stop" type="button" disabled>Cancel calibration</button>
+            </form>
+            <pre id="calibration-output" class="pose-command-result calibration-output" aria-live="polite">No calibration started.</pre>
+            <form id="calibration-input-form" class="pose-command-form">
+              <label>Reply to LeRobot (empty sends Enter)<input id="calibration-input" maxlength="200" autocomplete="off"></label>
+              <button class="button button-primary" id="calibration-reply" type="submit" disabled>Send reply</button>
+            </form>
+            <p id="calibration-message" role="status"></p>
           </div>
         </section>
 

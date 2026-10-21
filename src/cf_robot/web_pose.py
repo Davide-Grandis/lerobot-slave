@@ -10,6 +10,7 @@ from fastapi import HTTPException, Request
 from websockets.asyncio.client import connect
 
 from cf_robot.auth import access_headers
+from cf_robot.calibration_inspection import capture_validation, validation_analysis
 from cf_robot.pose_monitor import stream_leader_pose, validate_pose_command
 from cf_robot.protocol import VERSION
 
@@ -28,17 +29,29 @@ class BrowserPoseMonitor:
         self.command_id = 0
         self.pending_since = None
         self.status = {"state": "idle", "error": None}
+        self.sides = "both" if port else "follower"
+        self.captures = []
 
     @property
     def running(self):
         return self.task is not None and not self.task.done()
 
     def snapshot(self):
-        return {**self.status, "running": self.running}
+        return {
+            **self.status, "running": self.running, "sides": self.sides,
+            "captures": self.captures,
+            "analysis": validation_analysis(self.captures, self.status),
+        }
 
-    def start(self):
+    def start(self, sides=None):
         if self.running:
             raise RuntimeError("pose monitor is already running")
+        sides = sides or ("both" if self.port else "follower")
+        if sides not in ("leader", "follower", "both"):
+            raise ValueError("select leader, follower, or both")
+        if sides in ("leader", "both") and not self.port:
+            raise ValueError("configure the local leader serial port first")
+        self.sides = sides
         self.stop_event = threading.Event()
         self.last_heartbeat = time.monotonic()
         self.pending_since = None
@@ -77,6 +90,12 @@ class BrowserPoseMonitor:
             **body, "version": VERSION, "type": "command",
             "command_id": self.command_id + 1,
         })
+        sample = self.status.get("follower")
+        if command["mode"] != "torque" and (
+            not sample or not 0 <= time.time() - sample["sampled_at"] < 1.5
+            or (sample.get("calibration") or {}).get("state") != "consistent"
+        ):
+            raise ValueError("fresh follower sample and consistent calibration inspection required")
         self.command_id = command["command_id"]
         self.status["command_pending"] = True
         self.pending_since = time.monotonic()
@@ -91,10 +110,26 @@ class BrowserPoseMonitor:
             raise
         return {"command_id": self.command_id}
 
+    async def run_local(self):
+        loop = asyncio.get_running_loop()
+
+        def publish(message):
+            loop.call_soon_threadsafe(self.publish, message)
+
+        self.status["state"] = "ready"
+        await asyncio.to_thread(
+            self.leader_reader, self.port, self.arm_id, self.stop_event, publish,
+        )
+        if not self.stop_event.is_set():
+            raise RuntimeError("leader sampling stopped unexpectedly")
+
     async def run(self):
         leader_task = None
         watchdog = asyncio.create_task(self.watch_browser())
         try:
+            if self.sides == "leader":
+                await self.run_local()
+                return
             async with connect(
                 self.url, additional_headers=access_headers(self.url),
                 open_timeout=10, ping_interval=10, ping_timeout=5,
@@ -108,7 +143,7 @@ class BrowserPoseMonitor:
                     or started.get("version") != VERSION
                 ):
                     raise RuntimeError(started.get("message", "invalid monitor response"))
-                if self.port and not self.stop_event.is_set():
+                if self.sides == "both" and not self.stop_event.is_set():
                     loop = asyncio.get_running_loop()
 
                     def publish(message):
@@ -185,12 +220,12 @@ def install_pose_routes(app, monitor, require_origin, control_busy, stop_latched
             raise HTTPException(409, "stop teleoperation and clear its safety latch first")
         try:
             body = await request.json()
-            if body != {}:
+            if not isinstance(body, dict) or set(body) not in (set(), {"sides"}):
                 raise ValueError("pose monitor startup preserves the current torque state")
             # Recheck after reading the request: another start may have won the race.
             if control_busy() or stop_latched():
                 raise RuntimeError("teleoperation is active or safety-latched")
-            monitor.start()
+            monitor.start(body.get("sides"))
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(409, str(exc)) from exc
         return monitor.snapshot()
@@ -214,3 +249,28 @@ def install_pose_routes(app, monitor, require_origin, control_busy, stop_latched
             return await monitor.command(await request.json())
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/pose/capture")
+    async def capture(request: Request):
+        require_origin(request)
+        try:
+            body = await request.json()
+            if not monitor.running or monitor.status["state"] != "ready":
+                raise ValueError("start monitoring before capturing physical validation")
+            if monitor.status.get("command_pending"):
+                raise ValueError("wait for the motion command to finish")
+            if len(monitor.captures) >= 120:
+                raise ValueError("export and clear the existing captures first (limit 120)")
+            result = capture_validation(monitor.status, body)
+            monitor.captures.append(result)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return result
+
+    @app.post("/api/pose/captures/clear")
+    async def clear_captures(request: Request):
+        require_origin(request)
+        if await request.json() != {"confirmation": "CLEAR"}:
+            raise HTTPException(409, "confirm clearing validation evidence")
+        monitor.captures.clear()
+        return {"ok": True}

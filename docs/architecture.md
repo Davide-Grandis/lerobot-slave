@@ -36,11 +36,23 @@ the Pi.
 | [`src/cf_robot/auth.py`](../src/cf_robot/auth.py) | Validate the remote URL and attach Access and origin-key headers from the laptop environment. |
 | [`src/cf_robot/operator_session.py`](../src/cf_robot/operator_session.py) | Own one remote control socket; route either manual jog targets or leader samples, never both; refresh the manual target to satisfy the follower watchdog. |
 | [`src/cf_robot/web.py`](../src/cf_robot/web.py) | Serve the loopback controller API, relay JPEG frames, pair with the hosted page, and stop on stale browser/video heartbeats. |
+| [`src/cf_robot/calibration_inspection.py`](../src/cf_robot/calibration_inspection.py) | Read saved/live calibration, actual SDK units and identity; capture and analyse independent physical evidence without writes. |
+| [`src/cf_robot/web_calibration.py`](../src/cf_robot/web_calibration.py) | Run one explicitly confirmed, browser-supervised guided calibration, locally for the leader or through the Pi's existing authenticated calibration route. |
 | [`src/cf_robot/operator/`](../src/cf_robot/operator/) and [`operator/worker/`](../operator/worker/) | Serve the operator UI from Worker Static Assets; keep D1 for robot/session/audit records; render follower/leader pose from URDF joint transforms. |
 | [`src/cf_robot/parking_client.py`](../src/cf_robot/parking_client.py) | Record the follower's measured pose locally on the Mac and send a saved parking pose to the Pi over the authenticated control WebSocket. |
 | [`deploy/`](../deploy/) | Example Pi environment, follower service, and the root-owned WSS update watcher/service. |
 
 ## Control and video protocol
+
+The Pose Monitor supports independent local leader or remote follower sessions,
+as well as comparison. Calibration maintenance, monitoring and teleoperation are
+mutually exclusive in the controller; Pi routes retain their separate hardware
+interlocks. The paired `/api/calibration/*` routes accept only a fixed arm
+selection and guided-calibrator replies, not shell commands or arbitrary
+register/file writes. Browser heartbeat loss cancels calibration and retains
+local ownership through process cleanup. Cancellation does not roll back motor
+settings. See [Arm Calibration](arm-calibration.md) for the physical procedure,
+evidence limits and setting safeguards.
 
 - The Pi accepts `/control` only after checking `X-CF-Robot-Key`. It creates
   one `FollowerSession`, connects the arm with `calibrate=False`, reads its

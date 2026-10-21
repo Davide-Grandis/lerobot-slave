@@ -164,6 +164,12 @@ class PoseMonitorTests(unittest.TestCase):
             self.assertEqual(lines[row + 2], "")
         joint_six = next(index for index, line in enumerate(lines) if line.startswith("J6 "))
         self.assertEqual(lines[joint_six + 3], "=" * len(lines[header_index]))
+        self.assertNotIn("Unit", lines[header_index])
+        self.assertIn(" LT", lines[header_index])
+        self.assertIn(" FT", lines[header_index])
+        sample_index = next(index for index, line in enumerate(lines) if line.startswith("Samples:"))
+        self.assertEqual(lines[sample_index + 1], "=" * len(lines[header_index]))
+        self.assertIn("J1-J5 deg, J6 %", lines[sample_index + 2])
 
     @patch("cf_robot.pose_compare_client.subprocess.run")
     def test_monitor_version_uses_git_count_hash_and_dirty_marker(self, run_git):
@@ -219,6 +225,10 @@ class PoseMonitorTests(unittest.TestCase):
         )
 
     def test_cli_parses_requested_tick_degree_gripper_and_torque_syntax(self):
+        self.assertEqual(parse_pose_command("INSPECT L", 1), {"kind": "inspect", "side": "leader"})
+        self.assertEqual(
+            parse_pose_command("CAPTURE F J1 20 2 measured-angle", 1)["body"]["expected"], 20,
+        )
         self.assertEqual(
             parse_pose_command("J1 T823", 1)["message"]["value"],
             823,

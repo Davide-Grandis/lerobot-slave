@@ -8,13 +8,13 @@ CAMERA_WARMUP_S = 5
 def make_leader(port, arm_id):
     from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
 
-    return SO101Leader(SO101LeaderConfig(port=port, id=arm_id))
+    return SO101Leader(SO101LeaderConfig(port=port, id=arm_id, use_degrees=True))
 
 
 def make_follower(port, arm_id):
     from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
-    return SO101Follower(SO101FollowerConfig(port=port, id=arm_id))
+    return SO101Follower(SO101FollowerConfig(port=port, id=arm_id, use_degrees=True))
 
 
 def make_camera(device, width, height, fps):

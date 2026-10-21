@@ -238,6 +238,17 @@ h1 em { color: var(--orange); font-weight: 400; }
 .pose-arm-joints span { font: 10px "SFMono-Regular", Consolas, monospace; color: var(--muted); }
 .pose-arm-joints strong { font: 12px "SFMono-Regular", Consolas, monospace; }
 .pose-model-note { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.calibration-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.calibration-card { min-width: 0; border: 1px solid var(--line); padding: 14px; background: var(--panel-deep); }
+.calibration-card h3 { margin: 0 0 12px; font: 500 23px Georgia, serif; }
+.calibration-card p, .calibration-card pre { overflow-wrap: anywhere; white-space: pre-wrap; font: 11px/1.7 "SFMono-Regular", Consolas, monospace; }
+.calibration-card details { border-top: 1px solid var(--line); padding: 10px 0; font-size: 12px; }
+.calibration-card summary, .calibration-guide summary { cursor: pointer; line-height: 1.6; }
+.calibration-guide { margin-top: 18px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.calibration-output { max-height: 360px; overflow-y: auto; white-space: pre-wrap; }
+#calibration-evidence { white-space: pre-wrap; max-height: 380px; overflow-y: auto; margin-top: 16px; }
+#calibration-message { font-size: 12px; color: var(--orange); overflow-wrap: anywhere; }
+@media (max-width: 690px) { .calibration-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 690px) {
   .utility-bar { flex-wrap: wrap; gap: 0; margin-bottom: 16px; }
   .utility-bar .utility-tabs { flex-basis: 100%; }

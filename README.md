@@ -68,6 +68,11 @@ See the [controller-laptop operations guide](docs/controller-operations.md)
 for arm calibration, parking-pose commands, teleoperation, and Pi updates
 over WSS.
 
+For independent leader/follower calibration inspection, physical validation
+captures, JSON reports and guided calibration setting from the Arms Monitor,
+see [Arm Calibration](docs/arm-calibration.md). Leader-only and follower-only
+sessions do not require the other arm to be connected.
+
 ## Before using hardware
 
 - Calibrate each arm you will use with LeRobot on the machine and under the

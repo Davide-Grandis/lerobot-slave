@@ -4,7 +4,8 @@ import math
 import queue
 import time
 
-from cf_robot.hardware import make_follower, make_leader, joint_positions
+from cf_robot.calibration_inspection import inspect_calibration
+from cf_robot.hardware import make_follower, make_leader
 from cf_robot.protocol import JOINTS
 from cf_robot.servo_maintenance import HOME_SPEED, read_servo_limits
 
@@ -15,19 +16,34 @@ COMMAND_SETTLE_TIMEOUT_S = 5.0
 MOTORS = tuple(joint.removesuffix(".pos") for joint in JOINTS)
 
 
-def _sample(device, side, limits):
+def _sample(device, side, limits, calibration=None, previous=None):
     bus = device.bus
-    if side == "leader":
-        # This is the same normalized action value used by leader teleoperation.
-        values = joint_positions(device.get_action())
-    else:
-        observed = bus.sync_read("Present_Position", num_retry=2)
-        values = joint_positions(
-            {f"{motor}.pos": value for motor, value in observed.items()}
-        )
-
     raw = bus.sync_read("Present_Position", normalize=False, num_retry=2)
     torque = bus.sync_read("Torque_Enable", normalize=False, num_retry=2)
+    values, errors = {}, {}
+    for joint, motor in zip(JOINTS, MOTORS, strict=True):
+        try:
+            # Use the SDK conversion on this very encoder sample, not a second read.
+            motor_id = bus.motors[motor].id
+            value = float(bus._normalize({motor_id: raw[motor]})[motor_id])
+            if not math.isfinite(value):
+                raise ValueError("non-finite normalized position")
+            values[joint] = value
+        except (KeyError, ValueError, RuntimeError) as exc:
+            values[joint] = None
+            errors[joint] = str(exc)
+    warnings = []
+    for joint, motor in zip(JOINTS, MOTORS, strict=True):
+        item = (calibration or {}).get("joints", {}).get(joint, {})
+        saved = item.get("saved")
+        if (
+            saved and all(type(saved.get(key)) is int for key in ("range_min", "range_max"))
+            and not saved["range_min"] <= raw[motor] <= saved["range_max"]
+        ):
+            warnings.append(f"{motor}: outside saved range; range normalization may clip.")
+        resolution = item.get("resolution")
+        if previous and resolution and abs(raw[motor] - previous["raw"][joint]) > resolution / 2:
+            warnings.append(f"{motor}: possible encoder wrap/discontinuity or rapid movement.")
     return {
         "type": "pose_sample",
         "side": side,
@@ -41,6 +57,9 @@ def _sample(device, side, limits):
             for joint in JOINTS
         },
         "limits": limits,
+        "calibration": calibration,
+        "conversion_errors": errors,
+        "motion_warnings": warnings,
         "sampled_at": time.time(),
     }
 
@@ -309,10 +328,14 @@ def stream_leader_pose(port, arm_id, stop, publish):
     try:
         bus.connect()
         connected = True
-        limits = read_servo_limits(bus)
+        limits = read_servo_limits(bus, strict=False)
+        calibration = inspect_calibration(leader, "leader", limits)
+        previous = None
         while not stop.is_set():
             started = time.monotonic()
-            publish(_sample(leader, "leader", limits))
+            sample = _sample(leader, "leader", limits, calibration, previous)
+            publish(sample)
+            previous = sample
             remaining = POSE_MONITOR_INTERVAL_S - (time.monotonic() - started)
             if remaining > 0 and stop.wait(remaining):
                 break
@@ -336,7 +359,9 @@ def stream_follower_pose(
     try:
         bus.connect()
         connected = True
-        limits = read_servo_limits(bus)
+        limits = read_servo_limits(bus, strict=False)
+        calibration = inspect_calibration(follower, "follower", limits)
+        previous = None
         while not stop.is_set():
             if commands is not None:
                 try:
@@ -347,6 +372,8 @@ def stream_follower_pose(
                     if command_busy is not None:
                         command_busy.set()
                     try:
+                        if command["mode"] != "torque" and calibration["state"] != "consistent":
+                            raise ValueError("resolve calibration inspector warnings before position commands")
                         execute_pose_command(
                             follower,
                             limits,
@@ -365,7 +392,9 @@ def stream_follower_pose(
                         if command_busy is not None:
                             command_busy.clear()
             started = time.monotonic()
-            publish(_sample(follower, "follower", limits))
+            sample = _sample(follower, "follower", limits, calibration, previous)
+            publish(sample)
+            previous = sample
             remaining = POSE_MONITOR_INTERVAL_S - (time.monotonic() - started)
             if remaining > 0 and stop.wait(remaining):
                 break

@@ -47,14 +47,14 @@ def _read_raw(robot, register, motor):
     return int(robot.bus.read(register, motor, normalize=False, num_retry=2))
 
 
-def read_servo_limits(bus):
+def read_servo_limits(bus, strict=True):
     limits = {}
     for joint, motor in zip(JOINTS, MOTORS, strict=True):
         low = int(bus.read("Min_Position_Limit", motor, normalize=False, num_retry=2))
         high = int(bus.read("Max_Position_Limit", motor, normalize=False, num_retry=2))
-        if low > high:
+        if low > high and strict:
             low, high = high, low
-        if (
+        if strict and (
             low < 0
             or high > MAX_RAW_POSITION
             or high - low <= MIN_USABLE_RANGE

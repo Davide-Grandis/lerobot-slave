@@ -21,6 +21,7 @@ from websockets.asyncio.client import connect
 from cf_robot.auth import access_headers
 from cf_robot.operator_session import OperatorSession
 from cf_robot.protocol import validate_action
+from cf_robot.web_calibration import BrowserCalibration, install_calibration_routes
 from cf_robot.web_pose import BrowserPoseMonitor, install_pose_routes
 
 LOG = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ ASSETS = {
     "app.css": ("text/css; charset=utf-8", "operator/app.css"),
     "arm-viewer.js": ("text/javascript; charset=utf-8", "operator/arm-viewer.js"),
     "pose-monitor.js": ("text/javascript; charset=utf-8", "operator/pose-monitor.js"),
+    "calibration.js": ("text/javascript; charset=utf-8", "operator/calibration.js"),
 }
 
 
@@ -80,6 +82,7 @@ def create_app(
     }
     video_frame = {"data": None, "received_at": None}
     pose_monitor = BrowserPoseMonitor(url, port, arm_id, heartbeat_timeout)
+    calibration = BrowserCalibration(url, port, arm_id, heartbeat_timeout)
 
     def origin_allowed(origin, host):
         if not origin:
@@ -105,7 +108,12 @@ def create_app(
 
     install_pose_routes(
         app, pose_monitor, require_origin,
-        lambda: task is not None and not task.done(),
+        lambda: calibration.running or (task is not None and not task.done()),
+        lambda: estop_latched,
+    )
+    install_calibration_routes(
+        app, calibration, require_origin,
+        lambda: pose_monitor.running or (task is not None and not task.done()),
         lambda: estop_latched,
     )
 
@@ -265,8 +273,8 @@ def create_app(
             raise HTTPException(status_code=409, detail="re-arm explicitly after inspecting the robot")
         if task is not None and not task.done():
             raise HTTPException(status_code=409, detail="session already running")
-        if pose_monitor.running:
-            raise HTTPException(status_code=409, detail="stop the pose monitor before teleoperation")
+        if pose_monitor.running or calibration.running:
+            raise HTTPException(status_code=409, detail="stop monitoring/calibration before teleoperation")
         if not legacy_runner:
             try:
                 start_body = await request.json()
@@ -280,7 +288,7 @@ def create_app(
                 or time.time() - video_frame["received_at"] > VIDEO_STALE_S
             ):
                 raise HTTPException(status_code=409, detail="wait for a live follower camera before starting")
-        if estop_latched or pose_monitor.running or (task is not None and not task.done()):
+        if estop_latched or pose_monitor.running or calibration.running or (task is not None and not task.done()):
             raise HTTPException(status_code=409, detail="another hardware session is running")
         stop_event = asyncio.Event()
         last_heartbeat = time.monotonic()
@@ -346,6 +354,7 @@ def create_app(
         require_origin(request)
         estop_latched = True
         pose_monitor.stop()
+        calibration.stop()
         stop_reason = "Software stop requested. Inspect the robot before re-arming."
         if runtime is not None and task is not None and not task.done():
             runtime.stop_event.set()
@@ -368,7 +377,7 @@ def create_app(
             body = {}
         if not isinstance(body, dict) or body.get("confirmation") != "RE-ARM":
             raise HTTPException(status_code=400, detail="type RE-ARM after inspecting the robot")
-        if pose_monitor.running or (task is not None and not task.done()):
+        if pose_monitor.running or calibration.running or (task is not None and not task.done()):
             raise HTTPException(status_code=409, detail="stop the current session before re-arming")
         estop_latched = False
         status.update(state="idle", error=None, estop_latched=False)
@@ -422,6 +431,9 @@ def create_app(
 
     @app.on_event("shutdown")
     async def shutdown():
+        calibration.stop()
+        if calibration.task is not None:
+            await calibration.task
         pose_monitor.stop()
         if pose_monitor.task is not None:
             await pose_monitor.task

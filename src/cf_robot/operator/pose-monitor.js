@@ -1,4 +1,5 @@
 import { JOINTS, createArmViewer } from "./arm-viewer.js";
+import { createCalibrationPanel } from "./calibration.js";
 
 const $ = (id) => document.getElementById(id);
 const display = (value, digits = 2) => Number.isFinite(value) ? value.toFixed(digits) : "--";
@@ -8,6 +9,7 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
   let online = false;
   let busy = false;
   let lastHeartbeat = 0;
+  const calibration = createCalibrationPanel({ request, paired, getPose: () => status, controlStatus });
   const models = Object.fromEntries(["leader", "follower"].map((side) => {
     const values = JOINTS.map((joint, index) => {
       const item = document.createElement("div");
@@ -46,6 +48,7 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
       : !online ? "Waiting for the local controller. Check that cf-robot-web is running."
         : busy ? "Request in progress."
           : status.running ? "Monitor is already running."
+            : calibration.running ? "Finish calibration maintenance first."
             : control?.estop_latched ? "Re-arm the software stop before starting."
               : control?.running ? "Disconnect teleoperation before starting monitoring."
                 : "";
@@ -55,8 +58,10 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
     $("pose-start-reason").hidden = !startReason;
     $("pose-stop").disabled = !paired() || !status.running || status.state === "stopping";
     const fresh = status.follower && Date.now() / 1000 - status.follower.sampled_at < 1.5;
+    const position = ["degrees", "ticks", "percent"].includes($("pose-command-mode").value);
+    const consistent = status.follower?.calibration?.state === "consistent";
     $("pose-send").disabled = !online || busy || !status.running || status.state !== "ready"
-      || status.command_pending || !fresh;
+      || status.command_pending || !fresh || (position && !consistent);
   }
 
   function render() {
@@ -66,7 +71,8 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
     const leader = status.leader;
     for (const [side, model] of Object.entries(models)) {
       const sample = status[side];
-      const valid = JOINTS.every(({ key }) => Number.isFinite(sample?.values?.[key]));
+      const valid = JOINTS.every(({ key }, index) => Number.isFinite(sample?.values?.[key])
+        && (!sample.calibration || sample.calibration.joints[key]?.unit === (index === 5 ? "%" : "deg")));
       const fresh = valid && online && status.running
         && Date.now() / 1000 - sample.sampled_at <= 1.5;
       const modelState = !valid ? "waiting" : fresh ? "live" : "stale";
@@ -78,8 +84,9 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
         valid && side === "leader" ? sample.values : null,
       );
       model.values.forEach((element, index) => {
+        const unit = sample?.calibration?.joints?.[JOINTS[index].key]?.unit;
         element.textContent = valid
-          ? `${sample.values[JOINTS[index].key].toFixed(1)} ${index === 5 ? "/ 100" : "deg"}`
+          ? `${sample.values[JOINTS[index].key].toFixed(1)} ${unit || (index === 5 ? "/ 100" : "deg")}`
           : "--";
       });
     }
@@ -89,10 +96,15 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
         ? `${sample.limits[key].min}..${sample.limits[key].max}` : "--";
       const torque = (sample) => typeof sample?.torque?.[key] === "boolean"
         ? sample.torque[key] ? "V" : "X" : "--";
-      const delta = Number.isFinite(leader?.values?.[key]) && Number.isFinite(follower?.values?.[key])
+      const leaderMode = leader?.calibration?.joints[key]?.mode;
+      const followerMode = follower?.calibration?.joints[key]?.mode;
+      const compatible = !leaderMode || !followerMode || leaderMode === followerMode;
+      const delta = compatible && Number.isFinite(leader?.values?.[key]) && Number.isFinite(follower?.values?.[key])
         ? leader.values[key] - follower.values[key] : null;
+      const actualUnits = [...new Set([leader, follower].filter(Boolean).map((sample) =>
+        sample.calibration ? sample.calibration.joints[key]?.unit || "unknown" : index === 5 ? "%" : "deg"))];
       const values = [
-        index === 5 ? "0-100" : "deg",
+        actualUnits.length ? actualUnits.join(" / ") : index === 5 ? "%" : "deg",
         display(leader?.values?.[key]), display(follower?.values?.[key]), display(delta),
         display(leader?.raw?.[key], 0), limits(leader),
         display(follower?.raw?.[key], 0), limits(follower), torque(leader), torque(follower),
@@ -113,6 +125,7 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
       $("pose-command-result").textContent = "No commands sent.";
     }
     if (status.error) $("pose-message").textContent = status.error;
+    calibration.render();
     updateControls();
     onChange();
   }
@@ -136,7 +149,7 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
   }
 
   $("pose-start").addEventListener("click", async () => {
-    if (await action("/api/pose/start", {})) {
+    if (await action("/api/pose/start", { sides: $("pose-sides").value })) {
       $("pose-message").textContent = "Monitor started. Commands affect only the follower.";
     }
   });
@@ -223,5 +236,5 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
   }
   updateCommand();
   poll();
-  return { get running() { return status.running; } };
+  return { get running() { return status.running || calibration.running; } };
 }

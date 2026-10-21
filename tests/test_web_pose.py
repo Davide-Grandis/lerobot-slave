@@ -68,6 +68,9 @@ class BrowserPoseTests(unittest.IsolatedAsyncioTestCase):
     async def start_monitor(self):
         self.monitor.start()
         await wait_until(lambda: self.monitor.status["state"] == "ready")
+        self.monitor.status["follower"] = {
+            "sampled_at": time.time(), "calibration": {"state": "consistent"},
+        }
 
     async def test_start_preserves_torque_samples_and_explicit_shutdown(self):
         await self.start_monitor()
@@ -79,7 +82,7 @@ class BrowserPoseTests(unittest.IsolatedAsyncioTestCase):
             "values": {joint: 1.0 for joint in JOINTS}, "sampled_at": time.time(),
         }
         await self.socket.messages.put(sample)
-        await wait_until(lambda: self.monitor.status["follower"] is not None)
+        await wait_until(lambda: self.monitor.status["follower"].get("type") == "pose_sample")
         self.assertEqual(self.monitor.snapshot()["follower"], sample)
         self.monitor.stop()
         await self.monitor.task

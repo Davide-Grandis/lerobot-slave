@@ -6,13 +6,13 @@ import contextlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import termios
 import threading
 import time
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from websockets.asyncio.client import connect
@@ -20,7 +20,9 @@ from websockets.exceptions import WebSocketException
 
 from cf_robot import __version__
 from cf_robot.auth import access_headers
-from cf_robot.hardware import joint_positions, make_leader
+from cf_robot.calibration_inspection import capture_validation, inspect_calibration
+from cf_robot.hardware import make_leader
+from cf_robot.pose_monitor import _sample
 from cf_robot.protocol import JOINTS, VERSION
 from cf_robot.servo_maintenance import read_servo_limits
 
@@ -69,6 +71,19 @@ def parse_pose_command(line, command_id):
         return {"kind": "help"}
     if text.lower() in ("q", "quit", "exit"):
         return {"kind": "stop"}
+    match = re.fullmatch(r"INSPECT\s+([LF])", text, re.IGNORECASE)
+    if match:
+        return {"kind": "inspect", "side": "leader" if match[1].upper() == "L" else "follower"}
+    match = re.fullmatch(
+        r"CAPTURE\s+([LF])\s+J([1-6])\s+([+-]?[\d.]+)\s+([\d.]+)\s+(.+)",
+        text, re.IGNORECASE,
+    )
+    if match:
+        return {"kind": "capture", "body": {
+            "side": "leader" if match[1].upper() == "L" else "follower",
+            "joint": JOINTS[int(match[2]) - 1], "expected": float(match[3]),
+            "tolerance": float(match[4]), "label": match[5], "confirmed": True,
+        }}
 
     match = re.fullmatch(r"J(\*|[1-6])\s+(TE|TD)", text, re.IGNORECASE)
     if match:
@@ -216,28 +231,14 @@ def _read_leader(leader, loop, samples, stop):
         # Avoid LeRobot's configure path; this monitor only reads the leader bus.
         bus.connect()
         connected = True
-        limits = read_servo_limits(bus)
+        limits = read_servo_limits(bus, strict=False)
+        calibration = inspect_calibration(leader, "leader", limits)
+        previous = None
         while not stop.is_set():
             started = time.monotonic()
-            action = joint_positions(leader.get_action())
-            raw = bus.sync_read("Present_Position", normalize=False, num_retry=2)
-            torque = bus.sync_read("Torque_Enable", normalize=False, num_retry=2)
-            publish(
-                {
-                    "type": "leader_sample",
-                    "values": action,
-                    "raw": {
-                        joint: int(raw[joint.removesuffix(".pos")])
-                        for joint in JOINTS
-                    },
-                    "torque": {
-                        joint: bool(torque[joint.removesuffix(".pos")])
-                        for joint in JOINTS
-                    },
-                    "limits": limits,
-                    "sampled_at": time.time(),
-                }
-            )
+            sample = _sample(leader, "leader", limits, calibration, previous)
+            publish({**sample, "type": "leader_sample"})
+            previous = sample
             remaining = SAMPLE_INTERVAL_S - (time.monotonic() - started)
             if remaining > 0 and stop.wait(remaining):
                 break
@@ -255,44 +256,71 @@ def _render(build_version, leader_sample, follower_sample, command_buffer="", st
     if sys.stdout.isatty():
         sys.stdout.write("\033[H\033[J")
     print(f"ARMS MONITOR [{build_version}] -- Ctrl-C or q to stop")
-    print("Units: J1-J5 deg; J6 0-100; raw counts/MIN/MAX are ticks.")
     print("Leader values are the normalized target values teleoperation sends.")
     header = (
-        f"{'Joint':17} {'Leader':>8} {'Follower':>8} {'Delta':>8} "
-        f"{'Unit':>6} {'L torque':>8} {'F torque':>8}"
+        f"{'Joint':17}   {'Leader':>10}   {'Follower':>10}   {'Delta':>10}   "
+        f"{'LT':>3}   {'FT':>3}"
     )
     separator = "=" * len(header)
     print(separator)
     print(header)
     print(separator)
     for index, joint in enumerate(JOINTS, start=1):
-        leader_value = leader_sample["values"][joint]
-        follower_value = follower_sample["values"][joint]
-        delta = leader_value - follower_value
-        leader_raw = leader_sample["raw"][joint]
-        follower_raw = follower_sample["raw"][joint]
-        unit = "0-100" if joint == "gripper.pos" else "deg"
-        leader_limits = leader_sample["limits"][joint]
-        follower_limits = follower_sample["limits"][joint]
+        def number(sample, joint=joint):
+            value = (sample or {}).get("values", {}).get(joint)
+            return value if isinstance(value, (int, float)) and math.isfinite(value) else None
+
+        leader_value, follower_value = number(leader_sample), number(follower_sample)
+        modes = [
+            ((sample or {}).get("calibration") or {}).get("joints", {}).get(joint, {}).get("mode")
+            for sample in (leader_sample, follower_sample)
+        ]
+        compatible = not all(modes) or modes[0] == modes[1]
+        delta = (
+            leader_value - follower_value
+            if compatible and leader_value is not None and follower_value is not None else None
+        )
+
+        def formatted(value, signed=False):
+            return "--".rjust(10) if value is None else f"{value:+10.2f}" if signed else f"{value:10.2f}"
+
+        def torque(sample, joint=joint):
+            value = (sample or {}).get("torque", {}).get(joint)
+            return "--" if value is None else "V" if value else "X"
+
         print(
             f"J{index} {joint.removesuffix('.pos'):13} "
-            f"{leader_value:8.2f} {follower_value:8.2f} {delta:+8.2f} "
-            f"{unit:>6} {'V' if leader_sample['torque'][joint] else 'X':>8} "
-            f"{'V' if follower_sample['torque'][joint] else 'X':>8}"
+            f"   {formatted(leader_value)}   {formatted(follower_value)}   {formatted(delta, True)}   "
+            f"{torque(leader_sample):>3}   {torque(follower_sample):>3}"
         )
-        print(
-            f"   raw ticks: L {leader_raw:4d} [{leader_limits['min']}..{leader_limits['max']}] "
-            f"F {follower_raw:4d} [{follower_limits['min']}..{follower_limits['max']}]"
-        )
+        def raw_description(sample, joint=joint):
+            if not sample:
+                return "--"
+            bounds = sample["limits"][joint]
+            return f"{sample['raw'][joint]:4d} [{bounds['min']}..{bounds['max']}]"
+
+        print(f"   raw ticks: L {raw_description(leader_sample):24}   F {raw_description(follower_sample)}")
         print()
     print(separator)
     print(
-        f"Samples: leader={leader_sample['sampled_at']:.3f}, "
-        f"follower={follower_sample['sampled_at']:.3f}"
+        f"Samples: leader={leader_sample['sampled_at'] if leader_sample else '--'}, "
+        f"follower={follower_sample['sampled_at'] if follower_sample else '--'}"
     )
+    print(separator)
+    print("Units: J1-J5 deg, J6 % (0-100); raw/MIN/MAX ticks. LT/FT: V=ON, X=off.")
+    for side, sample in (("leader", leader_sample), ("follower", follower_sample)):
+        inspection = (sample or {}).get("calibration")
+        if inspection:
+            print(f"{side.capitalize()} calibration: {inspection['state']} (not physically validated)")
+            if any(item["unit"] != ("%" if key == "gripper.pos" else "deg") for key, item in inspection["joints"].items()):
+                print("WARNING: actual normalization differs from the units note; use INSPECT.")
+        for warning in (sample or {}).get("motion_warnings", []):
+            print(f"WARNING ({side}): {warning}")
     print("Follower: J1-J6 T<ticks>; J1-J5 D<degrees>; J6 %<0-100>")
     print("          J1-J6 or J* TE/TD (TD may sag); help; q")
     print("TE holds present position; TD releases torque and may drop the joint.")
+    print("INSPECT L/F; CAPTURE L/F J<n> <known value> <tolerance> <pose label>")
+    print("CAPTURE confirms an independently measured physical pose; it never moves an arm.")
     if status_message:
         print(status_message)
     print(f"> {command_buffer}", end="")
@@ -300,7 +328,7 @@ def _render(build_version, leader_sample, follower_sample, command_buffer="", st
 
 
 async def monitor_poses(url, port, arm_id, build_version):
-    leader = make_leader(port, arm_id)
+    leader = make_leader(port, arm_id) if port else None
     stop = threading.Event()
     samples = asyncio.Queue(maxsize=4)
     leader_thread = None
@@ -322,13 +350,14 @@ async def monitor_poses(url, port, arm_id, build_version):
 
         loop = asyncio.get_running_loop()
         terminal = TerminalInput(loop)
-        leader_thread = threading.Thread(
-            target=_read_leader,
-            args=(leader, loop, samples, stop),
-            name="leader-pose-monitor",
-            daemon=True,
-        )
-        leader_thread.start()
+        if leader is not None:
+            leader_thread = threading.Thread(
+                target=_read_leader,
+                args=(leader, loop, samples, stop),
+                name="leader-pose-monitor",
+                daemon=True,
+            )
+            leader_thread.start()
         follower_sample = None
         leader_sample = None
         status_message = ""
@@ -437,6 +466,17 @@ async def monitor_poses(url, port, arm_id, build_version):
                                 stop_sent = True
                                 stop.set()
                                 status_message = "Stopping monitor..."
+                            elif parsed["kind"] == "inspect":
+                                sample = leader_sample if parsed["side"] == "leader" else follower_sample
+                                status_message = json.dumps((sample or {}).get("calibration"), indent=2)
+                            elif parsed["kind"] == "capture":
+                                try:
+                                    evidence = capture_validation(
+                                        {"leader": leader_sample, "follower": follower_sample}, parsed["body"],
+                                    )
+                                    status_message = json.dumps(evidence, indent=2)
+                                except ValueError as exc:
+                                    status_message = str(exc)
                             else:
                                 await socket.send(
                                     json.dumps(
@@ -453,7 +493,7 @@ async def monitor_poses(url, port, arm_id, build_version):
                     terminal.changed.clear()
                     changed_task = asyncio.create_task(terminal.changed.wait())
 
-                if leader_sample is not None and follower_sample is not None:
+                if follower_sample is not None and (leader_sample is not None or leader is None):
                     _render(
                         build_version,
                         leader_sample,
@@ -484,8 +524,68 @@ async def monitor_poses(url, port, arm_id, build_version):
                     with contextlib.suppress(asyncio.CancelledError, WebSocketException, OSError):
                         await task
             if leader_thread is not None:
-                await asyncio.to_thread(leader_thread.join, 5)
+                await asyncio.to_thread(leader_thread.join)
             terminal.close()
+
+
+async def monitor_leader_only(port, arm_id, build_version):
+    """Inspect the local arm without opening any connection to the follower."""
+    leader = make_leader(port, arm_id)
+    loop = asyncio.get_running_loop()
+    samples = asyncio.Queue(maxsize=4)
+    stop = threading.Event()
+    terminal = TerminalInput(loop)
+    thread = threading.Thread(
+        target=_read_leader, args=(leader, loop, samples, stop),
+        name="leader-pose-monitor", daemon=True,
+    )
+    thread.start()
+    tasks = {
+        "sample": asyncio.create_task(samples.get()),
+        "command": asyncio.create_task(terminal.lines.get()),
+        "changed": asyncio.create_task(terminal.changed.wait()),
+        "stop": asyncio.create_task(terminal.stop_requested.wait()),
+    }
+    sample, status = None, "Leader-only: read-only. No follower connection."
+    try:
+        while True:
+            done, _ = await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_COMPLETED)
+            if tasks["stop"] in done:
+                return
+            if tasks["sample"] in done:
+                sample = tasks["sample"].result()
+                if sample.get("type") == "leader_error":
+                    raise RuntimeError(sample["message"])
+                tasks["sample"] = asyncio.create_task(samples.get())
+            if tasks["command"] in done:
+                try:
+                    command = parse_pose_command(tasks["command"].result(), 1)
+                    if command["kind"] == "stop":
+                        return
+                    if command["kind"] == "inspect":
+                        status = json.dumps((sample or {}).get("calibration"), indent=2) if command["side"] == "leader" else "Follower not connected in leader-only mode."
+                    elif command["kind"] == "capture":
+                        status = json.dumps(capture_validation({"leader": sample}, command["body"]), indent=2)
+                    else:
+                        status = "Leader-only: INSPECT L; CAPTURE L J<n> <known value> <tolerance> <label>; q"
+                except ValueError as exc:
+                    status = str(exc)
+                tasks["command"] = asyncio.create_task(terminal.lines.get())
+            if tasks["changed"] in done:
+                terminal.changed.clear()
+                tasks["changed"] = asyncio.create_task(terminal.changed.wait())
+            if sample:
+                _render(build_version, sample, None, terminal.buffer, status)
+    finally:
+        stop.set()
+        for task in tasks.values():
+            task.cancel()
+        for task in tasks.values():
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        # Do not return serial ownership while the hardware thread is still alive.
+        await asyncio.to_thread(thread.join)
+        terminal.close()
 
 
 def main():
@@ -497,21 +597,25 @@ def main():
         default=os.environ.get("CF_ROBOT_CONTROL_URL"),
         help="WSS control URL (defaults to CF_ROBOT_CONTROL_URL)",
     )
-    parser.add_argument("--port", required=True, help="Local leader serial device")
+    parser.add_argument("--port", help="Local leader serial device (required for leader/both)")
+    parser.add_argument("--side", choices=("leader", "follower", "both"), default="both")
     parser.add_argument("--arm-id", default="so101_leader", help="Leader calibration ID")
     args = parser.parse_args()
-    if not args.url:
+    if args.side != "follower" and not args.port:
+        parser.error("pass --port for leader or both arms")
+    if args.side != "leader" and not args.url:
         parser.error("pass --url or set CF_ROBOT_CONTROL_URL in controller.env")
 
     try:
-        asyncio.run(
-            monitor_poses(
+        if args.side == "leader":
+            asyncio.run(monitor_leader_only(args.port, args.arm_id, git_build_version()))
+        else:
+            asyncio.run(monitor_poses(
                 monitor_url(args.url),
-                args.port,
+                args.port if args.side == "both" else None,
                 args.arm_id,
                 git_build_version(),
-            )
-        )
+            ))
     except KeyboardInterrupt:
         print("\nPose monitoring stopped.")
     except (OSError, RuntimeError, ValueError, WebSocketException) as exc:
