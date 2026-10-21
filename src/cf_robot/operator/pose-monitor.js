@@ -9,6 +9,9 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
   let online = false;
   let busy = false;
   let lastHeartbeat = 0;
+  let restorePreview = null;
+  let restoreExpires = 0;
+  let restoreCommandId = null;
   const calibration = createCalibrationPanel({ request, paired, getPose: () => status, controlStatus });
   const models = Object.fromEntries(["leader", "follower"].map((side) => {
     const values = JOINTS.map((joint, index) => {
@@ -62,6 +65,11 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
     const consistent = status.follower?.calibration?.state === "consistent";
     $("pose-send").disabled = !online || busy || !status.running || status.state !== "ready"
       || status.command_pending || !fresh || (position && !consistent);
+    const restoreReady = online && !busy && status.running && status.state === "ready"
+      && !status.command_pending && fresh && status.follower?.torque?.["gripper.pos"] === false;
+    $("pose-restore-preview").disabled = !paired() || !restoreReady;
+    $("pose-restore-apply").disabled = !paired() || !restoreReady
+      || !restorePreview || Date.now() >= restoreExpires;
   }
 
   function render() {
@@ -116,6 +124,13 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
       ? `${Math.max(0, Math.round(Date.now() - sample.sampled_at * 1000))} ms old` : "NO SAMPLE";
     $("pose-sample-age").textContent = `LEADER / ${age(leader)}   FOLLOWER / ${age(follower)}`;
     const command = status.command;
+    if (command?.type === "command_result" && command.command_id !== restoreCommandId
+      && ["calibration_preview", "calibration_restore"].includes(command.mode)) {
+      restoreCommandId = command.command_id;
+      restorePreview = command.calibration_preview || null;
+      restoreExpires = Date.now() + (restorePreview?.expires_in_s || 0) * 1000;
+      $("pose-restore-result").textContent = JSON.stringify(command, null, 2);
+    }
     if (command) {
       $("pose-command-result").textContent = `#${command.command_id} / J${command.joint_id ?? "?"}: ${command.state || command.type}`
         + (command.message ? ` - ${command.message}` : "")
@@ -131,6 +146,7 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
   }
 
   async function action(path, body) {
+    restorePreview = null;
     busy = true;
     updateControls();
     try {
@@ -154,6 +170,25 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
     }
   });
   $("pose-stop").addEventListener("click", () => action("/api/pose/stop"));
+  $("pose-restore-preview").addEventListener("click", async () => {
+    if ($("pose-restore-preview").disabled) return;
+    $("pose-restore-confirmation").value = "";
+    $("pose-restore-supported").checked = false;
+    await action("/api/pose/command", { joint_id: 6, mode: "calibration_preview" });
+  });
+  $("pose-restore-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if ($("pose-restore-apply").disabled || !event.target.reportValidity()) return;
+    const proposed = restorePreview.proposed;
+    if (!window.confirm(`Write ONLY follower J6: offset ${proposed.homing_offset}, limits ${proposed.range_min}..${proposed.range_max}? Torque stays OFF; J1-J5 and the saved file are unchanged.`)) return;
+    const body = {
+      joint_id: 6, mode: "calibration_restore", token: restorePreview.token,
+      confirmation: $("pose-restore-confirmation").value,
+    };
+    $("pose-restore-confirmation").value = "";
+    $("pose-restore-supported").checked = false;
+    await action("/api/pose/command", body);
+  });
   const mode = $("pose-command-mode");
   const target = $("pose-value");
   function updateCommand() {

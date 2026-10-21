@@ -70,6 +70,8 @@ The follower command form supports:
 - J1-J5: degree targets.
 - J6: normalized 0-100 targets.
 - J1-J6: enable or disable torque on the selected follower joint only.
+- J6 only: preview and explicitly confirm restoration of its saved calibration,
+  with torque already OFF, in the dedicated gripper-restore form.
 
 Position commands additionally require a fresh sample and a consistent
 calibration inspection. Update both controller and Pi for this feature.

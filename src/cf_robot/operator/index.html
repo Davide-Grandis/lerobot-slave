@@ -167,6 +167,15 @@
             </form>
             <p class="stop-warning">Position targets must be inside the servo's reported limits and require torque ON. The Pi applies bounded movement steps and reports completion or failure. Torque enable first holds the current position. No command changes the leader's torque.</p>
             <output id="pose-command-result" class="pose-command-result" aria-live="polite">No commands sent.</output>
+            <form id="pose-restore-form" class="pose-command-form">
+              <div><span class="section-kicker">FOLLOWER J6 ONLY / SAVED CALIBRATION TO MOTOR</span><h3>Restore gripper calibration</h3></div>
+              <p class="stop-warning">J6 torque must already be OFF. Secure the arm, keep fingers clear and position the gripper safely inside its travel. Preview checks the measured position under the proposed offset. This writes only J6's saved offset and limits, not the calibration file or J1-J5. No goal is sent; torque stays OFF. A failed/interrupted restore may leave partial settings: inspect before retrying.</p>
+              <button class="button button-quiet" id="pose-restore-preview" type="button" disabled>Preview J6 restore</button>
+              <label>Type RESTORE J6<input id="pose-restore-confirmation" pattern="RESTORE J6" autocomplete="off" required></label>
+              <label class="pose-confirm"><input id="pose-restore-supported" type="checkbox" required> I have secured the arm, checked the preview values and kept the gripper clear.</label>
+              <button class="button button-primary" id="pose-restore-apply" type="submit" disabled>Confirm J6 restore</button>
+              <output id="pose-restore-result" class="pose-command-result calibration-output">No preview. Select J6 in the servo command form and explicitly disable its torque first. Previews expire after 60 seconds.</output>
+            </form>
           </div>
         </section>
 

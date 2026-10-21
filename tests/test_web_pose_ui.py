@@ -28,6 +28,7 @@ window.testFollowerOffset = 0;
 window.testMissingLeader = false;
 window.testSampleAge = 0;
 window.testVideoRequests = 0;
+window.testJ6Torque = true;
 const keys = ['shoulder_pan.pos','shoulder_lift.pos','elbow_flex.pos',
               'wrist_flex.pos','wrist_roll.pos','gripper.pos'];
 const sample = side => ({
@@ -36,7 +37,7 @@ const sample = side => ({
     k,i*2+(side==='leader'?window.testLeaderOffset:window.testFollowerOffset)
   ])),
   raw:Object.fromEntries(keys.map(k=>[k,2048])),
-  torque:Object.fromEntries(keys.map(k=>[k,true])),
+  torque:Object.fromEntries(keys.map((k,i)=>[k,i===5?window.testJ6Torque:true])),
   limits:Object.fromEntries(keys.map(k=>[k,{min:100,max:3900}]))
   ,calibration: {
     state:'consistent',side,arm_id:side,port:'/dev/fake',lerobot_version:'test',
@@ -68,7 +69,20 @@ window.fetch = async (url, options={}) => {
     const body = JSON.parse(options.body);
     window.testCommands.push(body);
     command={type:'command_result',command_id:window.testCommands.length,
-             joint_id:body.joint_id,state:'succeeded'};
+             joint_id:body.joint_id,mode:body.mode,state:'succeeded'};
+    if (body.mode === 'torque' && body.joint_id === 6) window.testJ6Torque=body.enabled;
+    if (body.mode === 'calibration_preview') {
+      command.state='preview';
+      command.calibration_preview={
+        token:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',expires_in_s:60,
+        current:{homing_offset:-208,range_min:0,range_max:4095},
+        proposed:{homing_offset:-873,range_min:2038,range_max:3488},
+        current_raw:2100,projected_raw:2765
+      };
+    }
+    if (body.mode === 'calibration_restore') {
+      command.calibration_restore={torque_enabled:false};
+    }
     return reply({command_id:command.command_id});
   }
   if (path === '/api/pose/heartbeat') return reply({ok:true});
@@ -296,6 +310,32 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                         {"joint_id": 6, "mode": "percent", "value": 40},
                     ])
                     await wait_for("document.getElementById('pose-command-result').textContent.includes('succeeded')")
+                    self.assertTrue(await evaluate("document.getElementById('pose-restore-preview').disabled"))
+                    await evaluate("""
+                      document.getElementById('pose-command-mode').value='disable';
+                      document.getElementById('pose-command-mode').dispatchEvent(new Event('change'));
+                      document.getElementById('pose-command-confirm').checked=true;
+                      document.getElementById('pose-send').click();
+                    """)
+                    await wait_for("!document.getElementById('pose-restore-preview').disabled")
+                    self.assertTrue(await evaluate("document.getElementById('pose-restore-apply').disabled"))
+                    await evaluate("document.getElementById('pose-restore-preview').click()")
+                    await wait_for("!document.getElementById('pose-restore-apply').disabled")
+                    self.assertIn("2765", await evaluate(
+                        "document.getElementById('pose-restore-result').textContent",
+                    ))
+                    await evaluate("""
+                      window.confirm=()=>true;
+                      document.getElementById('pose-restore-confirmation').value='RESTORE J6';
+                      document.getElementById('pose-restore-supported').checked=true;
+                      document.getElementById('pose-restore-apply').click();
+                    """)
+                    await wait_for("window.testCommands.length === 4")
+                    self.assertEqual(await evaluate("window.testCommands[3]"), {
+                        "joint_id": 6, "mode": "calibration_restore",
+                        "token": "a" * 32, "confirmation": "RESTORE J6",
+                    })
+                    self.assertFalse(await evaluate("window.testJ6Torque"))
                     for width, height in ((1440, 1400), (390, 844)):
                         await cdp("Emulation.setDeviceMetricsOverride", {
                             "width": width, "height": height, "deviceScaleFactor": 1,

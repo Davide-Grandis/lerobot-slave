@@ -72,6 +72,20 @@ def parse_pose_command(line, command_id):
         return {"kind": "help"}
     if text.lower() in ("q", "quit", "exit"):
         return {"kind": "stop"}
+    if text.upper() == "J6 RESTORE PREVIEW":
+        return {"kind": "command", "message": {
+            "version": VERSION, "type": "command", "command_id": command_id,
+            "joint_id": 6, "mode": "calibration_preview",
+        }}
+    if text.upper() == "J6 RESTORE CONFIRM":
+        return {"kind": "confirm_restore"}
+    match = re.fullmatch(r"J6\s+RESTORE\s+CONFIRM\s+([0-9a-f]{32})", text, re.IGNORECASE)
+    if match:
+        return {"kind": "command", "message": {
+            "version": VERSION, "type": "command", "command_id": command_id,
+            "joint_id": 6, "mode": "calibration_restore",
+            "token": match[1].lower(), "confirmation": "RESTORE J6",
+        }}
     match = re.fullmatch(r"INSPECT\s+([LF])", text, re.IGNORECASE)
     if match:
         return {"kind": "inspect", "side": "leader" if match[1].upper() == "L" else "follower"}
@@ -171,6 +185,18 @@ class InspectionReports:
 
     def __init__(self):
         self.reports = {}
+        self.restore_reports = {}
+        self.restore_token = None
+
+    def retain_restore(self, message):
+        self.restore_reports[message["mode"]] = json.dumps(message, indent=2)
+        self.restore_token = (message.get("calibration_preview") or {}).get("token")
+
+    def confirm_restore(self, command_id):
+        token, self.restore_token = self.restore_token, None
+        if not token:
+            raise ValueError("request and review J6 RESTORE PREVIEW before confirming")
+        return parse_pose_command(f"J6 RESTORE CONFIRM {token}", command_id)["message"]
 
     def command(self, command, samples):
         side = command["side"]
@@ -191,12 +217,15 @@ class InspectionReports:
         return content
 
     def print_on_exit(self):
-        if not self.reports:
+        if not self.reports and not self.restore_reports:
             return
         print("\n" + "=" * 72)
         print("INSPECTION REPORTS -- retained after monitor exit; safe to copy")
         for side, content in self.reports.items():
             print(f"\n{side.upper()} INSPECTION")
+            print(content)
+        for mode, content in self.restore_reports.items():
+            print(f"\nJ6 {mode.upper()}")
             print(content)
         print("=" * 72)
         sys.stdout.flush()
@@ -368,6 +397,7 @@ def _render(build_version, leader_sample, follower_sample, command_buffer="", st
     print("TE holds present position; TD releases torque and may drop the joint.")
     print("INSPECT L/F (reprinted on exit); SAVE L/F <path> (JSON, no overwrite)")
     print("CAPTURE L/F J<n> <known value> <tolerance> <pose label>")
+    print("J6 RESTORE PREVIEW; then J6 RESTORE CONFIRM (J6 torque must be OFF)")
     print("CAPTURE confirms an independently measured physical pose; it never moves an arm.")
     if status_message:
         print(status_message)
@@ -479,6 +509,9 @@ async def monitor_poses(url, port, arm_id, build_version):
                                 f" ({message.get('current', 0):.2f} -> "
                                 f"{message.get('target', 0):.2f} {message.get('unit', '')})"
                             )
+                        if message.get("mode") in ("calibration_preview", "calibration_restore"):
+                            inspections.retain_restore(message)
+                            status_message = json.dumps(message, indent=2)
                     else:
                         raise RuntimeError("Pi returned an invalid pose-monitor sample")
                     receive_task = asyncio.create_task(socket.recv())
@@ -528,15 +561,16 @@ async def monitor_poses(url, port, arm_id, build_version):
                                 except ValueError as exc:
                                     status_message = str(exc)
                             else:
-                                await socket.send(
-                                    json.dumps(
-                                        parsed["message"],
-                                        separators=(",", ":"),
+                                try:
+                                    message = (
+                                        inspections.confirm_restore(command_id)
+                                        if parsed["kind"] == "confirm_restore" else parsed["message"]
                                     )
-                                )
-                                status_message = (
-                                    f"J{parsed['message']['joint_id']}: command sent"
-                                )
+                                except ValueError as exc:
+                                    status_message = str(exc)
+                                else:
+                                    await socket.send(json.dumps(message, separators=(",", ":")))
+                                    status_message = f"J{message['joint_id']}: command sent"
                     command_task = asyncio.create_task(terminal.lines.get())
 
                 if changed_task in done:

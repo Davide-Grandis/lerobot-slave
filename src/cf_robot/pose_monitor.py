@@ -5,6 +5,7 @@ import queue
 import time
 
 from cf_robot.calibration_inspection import inspect_calibration
+from cf_robot.calibration_restore import GripperCalibrationRestore
 from cf_robot.hardware import make_follower, make_leader
 from cf_robot.protocol import JOINTS
 from cf_robot.servo_maintenance import HOME_SPEED, read_servo_limits
@@ -77,6 +78,23 @@ def validate_pose_command(message):
         raise ValueError("command_id must be a positive integer")
     joint_id = message.get("joint_id")
     mode = message.get("mode")
+    if mode in ("calibration_preview", "calibration_restore"):
+        if type(joint_id) is not int or joint_id != 6:
+            raise ValueError("targeted calibration restore supports follower J6 only")
+        keys = {"version", "type", "command_id", "joint_id", "mode"}
+        if mode == "calibration_preview":
+            if set(message) != keys:
+                raise ValueError("J6 preview takes no register values")
+        else:
+            token = message.get("token")
+            if (
+                set(message) != keys | {"token", "confirmation"}
+                or message.get("confirmation") != "RESTORE J6"
+                or not isinstance(token, str) or len(token) != 32
+                or any(character not in "0123456789abcdef" for character in token)
+            ):
+                raise ValueError("confirm RESTORE J6 with the token from a fresh preview")
+        return dict(message)
     if mode == "torque":
         if (
             set(message) != {"version", "type", "command_id", "joint_id", "mode", "enabled"}
@@ -125,6 +143,7 @@ def _publish_command_result(report, command, state, **details):
             "type": "command_result",
             "command_id": command["command_id"],
             "joint_id": joint_id,
+            "mode": command["mode"],
             "state": state,
             **details,
         }
@@ -361,6 +380,7 @@ def stream_follower_pose(
         connected = True
         limits = read_servo_limits(bus, strict=False)
         calibration = inspect_calibration(follower, "follower", limits)
+        restore = GripperCalibrationRestore()
         previous = None
         while not stop.is_set():
             if commands is not None:
@@ -372,15 +392,32 @@ def stream_follower_pose(
                     if command_busy is not None:
                         command_busy.set()
                     try:
-                        if command["mode"] != "torque" and calibration["state"] != "consistent":
-                            raise ValueError("resolve calibration inspector warnings before position commands")
-                        execute_pose_command(
-                            follower,
-                            limits,
-                            command,
-                            stop,
-                            publish,
-                        )
+                        mode = command["mode"]
+                        if mode == "calibration_preview":
+                            preview = restore.preview(follower)
+                            _publish_command_result(
+                                publish, command, "preview",
+                                message="Read-only J6 preview. Review before confirming; expires in 60 seconds.",
+                                calibration_preview=preview,
+                            )
+                        elif mode == "calibration_restore":
+                            result = restore.apply(follower, command["token"], stop)
+                            _publish_command_result(
+                                publish, command, "succeeded",
+                                message="J6 saved calibration restored and verified. Torque remains OFF; J1-J5 unchanged.",
+                                calibration_restore=result,
+                            )
+                        else:
+                            restore.plan = None
+                            if restore.tainted and (
+                                mode != "torque" or command["enabled"]
+                            ):
+                                raise ValueError("J6 restore incomplete; only torque OFF and restore commands are allowed")
+                            if mode in ("ticks", "degrees", "percent") and calibration["state"] != "consistent":
+                                raise ValueError("resolve calibration inspector warnings before position commands")
+                            execute_pose_command(
+                                follower, limits, command, stop, publish,
+                            )
                     except Exception as exc:
                         _publish_command_result(
                             publish,
@@ -389,6 +426,13 @@ def stream_follower_pose(
                             message=str(exc),
                         )
                     finally:
+                        if command["mode"] in ("calibration_preview", "calibration_restore"):
+                            limits = read_servo_limits(bus, strict=False)
+                            calibration = inspect_calibration(follower, "follower", limits)
+                            if restore.tainted:
+                                calibration["state"] = "warning"
+                                calibration["warnings"].append("J6 restore incomplete; inspect before further operation.")
+                            previous = None
                         if command_busy is not None:
                             command_busy.clear()
             started = time.monotonic()

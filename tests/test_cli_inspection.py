@@ -54,6 +54,24 @@ class InspectionReportTests(unittest.TestCase):
             with self.subTest(line=line), self.assertRaises(ValueError):
                 parse_pose_command(line, 1)
 
+    def test_restore_confirmation_uses_preview_token_once_without_copying(self):
+        self.assertEqual(parse_pose_command("J6 RESTORE CONFIRM", 1)["kind"], "confirm_restore")
+        with self.assertRaisesRegex(ValueError, "PREVIEW"):
+            self.inspections.confirm_restore(1)
+        self.inspections.retain_restore({
+            "mode": "calibration_preview", "state": "preview",
+            "calibration_preview": {"token": "a" * 32},
+        })
+        command = self.inspections.confirm_restore(2)
+        self.assertEqual(command["token"], "a" * 32)
+        self.assertEqual(command["confirmation"], "RESTORE J6")
+        with self.assertRaises(ValueError):
+            self.inspections.confirm_restore(3)
+        output = StringIO()
+        with patch("cf_robot.pose_compare_client.sys.stdout", output):
+            self.inspections.print_on_exit()
+        self.assertIn("CALIBRATION_PREVIEW", output.getvalue())
+
 
 class InspectionExitTests(unittest.IsolatedAsyncioTestCase):
     async def test_follower_exit_retains_report_after_stop_redraw(self):

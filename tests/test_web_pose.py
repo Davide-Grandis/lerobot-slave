@@ -133,6 +133,21 @@ class BrowserPoseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.socket.sent[-1]["command_id"], 2)
         self.assertIs(self.socket.sent[-1]["enabled"], False)
 
+    async def test_restore_commands_allow_calibration_mismatches_but_require_fresh_sample(self):
+        await self.start_monitor()
+        self.monitor.status["follower"]["calibration"]["state"] = "warning"
+        await self.monitor.command({"joint_id": 6, "mode": "calibration_preview"})
+        self.monitor.publish({"type": "command_result", "command_id": 1, "state": "preview"})
+        await self.monitor.command({
+            "joint_id": 6, "mode": "calibration_restore",
+            "token": "a" * 32, "confirmation": "RESTORE J6",
+        })
+        self.assertEqual(self.socket.sent[-1]["mode"], "calibration_restore")
+        self.monitor.publish({"type": "command_result", "command_id": 2, "state": "succeeded"})
+        self.monitor.status["follower"]["sampled_at"] -= 10
+        with self.assertRaisesRegex(ValueError, "fresh follower sample"):
+            await self.monitor.command({"joint_id": 6, "mode": "calibration_preview"})
+
     async def test_browser_loss_stops_monitor_without_restoring_torque(self):
         await self.start_monitor()
         self.monitor.last_heartbeat -= 10

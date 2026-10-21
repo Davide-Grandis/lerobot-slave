@@ -40,8 +40,9 @@ must not be added again in the display. The degree reference in the SO-arm SDK
 is based on the recorded range midpoint; it is not automatically a universal
 physical "straight arm" zero.
 
-Register inspection is a snapshot at monitor startup. Stop/restart monitoring
-after any calibration or configuration change. Missing calibration can leave
+Register inspection is a snapshot at monitor startup, refreshed automatically
+after targeted J6 restore commands. Stop/restart monitoring after other
+calibration or configuration changes. Missing calibration can leave
 normalized values unavailable while raw inspection remains usable. An unreadable
 or malformed file that prevents LeRobot constructing the arm must be repaired
 or replaced before monitoring can start; it can also prevent the guided
@@ -113,7 +114,81 @@ and complete/repeat calibration before resuming. No calibration automatically
 resumes or automatically restarts teleoperation.
 
 After completion, restart monitoring to reload calibration and repeat physical
-validation. Calibration and live monitoring cannot run concurrently.
+validation. Whole-arm guided calibration and live monitoring cannot run concurrently.
+
+## Restore Only Follower J6 From The Saved Calibration
+
+This separate operation runs inside the follower monitor. It repairs a mismatch
+between the saved gripper calibration and its live servo configuration without
+recalibrating any joint or editing the saved file. Update both the controller
+package and Pi package first; publish the new static assets for browser controls.
+Stop teleoperation and competing monitor sessions.
+
+In the CLI, start follower-only monitoring, secure the arm, keep fingers clear
+and use:
+
+```text
+J6 TD
+J6 RESTORE PREVIEW
+```
+
+`J6 TD` explicitly disables only the gripper's torque; it does not disable the
+arm's other joints. Move the gripper gently to a safe interior position only
+with torque OFF, then keep it still and request a fresh preview.
+
+Preview is read-only. It shows the current and proposed saved offset/ranges,
+current raw position, predicted raw position after the offset change and the
+source file fingerprint. Verify the proposed values. For the reported repair,
+these are offset `-873` and limits `2038..3488`; values always come from the
+loaded saved calibration, not from arbitrary command arguments.
+
+Feetech uses `Present_Position = Actual_Position - Homing_Offset`, so the
+prediction is `current_raw + live_offset - saved_offset`. No wrap is assumed.
+The predicted position must lie at least 20 ticks inside each proposed limit.
+A fully open reading of 2863 with live offset -208 predicts 3528 under -873 and
+is therefore refused for limits 2038..3488. An interior reading of 2100 predicts
+2765 and passes the position check.
+
+Only after physically checking the workspace/support and reviewing the preview:
+
+```text
+J6 RESTORE CONFIRM
+```
+
+The CLI attaches the one-use preview token automatically; no long token needs
+to be copied. Confirmation is valid only in the same monitor session and within
+60 seconds. Quit/reconnect, expired previews, more than 20 ticks of gripper
+movement, changed calibration/limits or torque ON require a new preview.
+Non-calibration servo commands invalidate the pending preview.
+
+In the browser, use **Restore gripper calibration** below the servo command
+form. Explicitly disable J6 torque first, select **Preview J6 restore**, inspect
+the report, type `RESTORE J6`, check the support/clearance confirmation and confirm.
+
+The Pi validates the arm/model, saved-file consistency, operating mode, torque,
+preview freshness and live configuration again before writing. Only J6's
+Homing_Offset, Min_Position_Limit and Max_Position_Limit are restored; J6's EEPROM
+lock is temporarily unlocked if necessary and its original lock state restored
+on success. No Goal_Position or Torque_Enable is written. EEPROM writes are not
+automatically retried. J1-J5 settings and torque states are not changed.
+
+Readback verifies the J6 calibration, predicted encoder position, unchanged
+J1-J5 calibration and unchanged file. J6 stays torque OFF. The inspector is
+refreshed automatically; warnings on J1-J5 remain until those joints are repaired
+and physically validated separately. No teleoperation automatically starts.
+
+A failed or interrupted operation is **not transactional**: partial register
+changes or an unlocked EEPROM may remain. There is no automatic rollback.
+The current monitor session blocks position commands and torque enable after
+an uncertain restore; torque OFF and a fresh restore preview remain available.
+Do not reconnect to bypass that interlock. Inspect the result and use a new
+preview before an explicitly confirmed retry.
+
+CLI preview and restore results are reprinted on exit for copying. Browser
+results remain in the dedicated restore output until another restore result.
+Export the inspection before repair if you need a retained record of prior
+settings. After success, gently validate J6's physical endpoints and intermediate
+readings with torque OFF before considering powered commands.
 
 ## CLI
 
@@ -153,7 +228,8 @@ Neither INSPECT nor SAVE sends robot commands or changes calibration.
 against an independently measured zero, with a 2-degree tolerance; use `F` for
 the follower. Issuing CAPTURE confirms the physical measurement. CLI captures
 are displayed only, not retained as a multi-pose validation dataset; use the
-browser for fitted analysis and JSON export. All of these commands are read-only.
+browser for fitted analysis and JSON export. INSPECT, SAVE and CAPTURE do not
+write robot settings; the separately confirmed J6 RESTORE operation does.
 
 For terminal-based setting, use `lerobot-calibrate --teleop.type=so101_leader`
 with the actual leader port/ID, or `cf-robot-follower-calibrate` for the Pi.
