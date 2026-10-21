@@ -89,7 +89,9 @@ class FollowerSession:
                         for name in previous
                         if abs(target[name] - previous[name]) > self.max_step
                     }
-                    if jumps:
+                    # Active J6 goals are bounded against measured position by
+                    # its adapter; a lagging servo may have a distant leader target.
+                    if jumps and (not armed or self.joints != GRIPPER_JOINTS):
                         baseline_label = "follower" if not armed else "previous leader"
                         next_step = (
                             "align arms before starting"

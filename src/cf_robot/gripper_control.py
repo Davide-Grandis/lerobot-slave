@@ -1,5 +1,6 @@
 """Isolated J6 adapters: never configure or command the other five joints."""
 
+from time import monotonic
 from urllib.parse import urlsplit, urlunsplit
 
 from cf_robot.calibration_inspection import inspect_calibration
@@ -8,7 +9,10 @@ from cf_robot.servo_maintenance import HOME_SPEED, read_servo_limits
 
 MOTOR = "gripper"
 JOINT = "gripper.pos"
-MAX_TRACKING_ERROR_PERCENT = 5
+MAX_GOAL_LEAD_PERCENT = 5
+PROGRESS_TOLERANCE_PERCENT = 1.0
+MIN_PROGRESS_PERCENT = 0.25
+NO_PROGRESS_TIMEOUT_S = 1.0
 
 
 def gripper_control_url(url):
@@ -75,6 +79,11 @@ class GripperFollower(GripperLeader):
         self.changed = False
         self.previous_speed = None
         self.side = "follower"
+        self.last_goal = None
+        self.progress_position = None
+        self.progress_at = None
+        self.progress_direction = 0
+        self.speed = None
 
     def get_observation(self):
         return self.get_action()
@@ -82,8 +91,12 @@ class GripperFollower(GripperLeader):
     def send_action(self, action):
         target = validate_action(action, GRIPPER_JOINTS)[JOINT]
         measured = self.get_action()[JOINT]
-        if abs(target - measured) > MAX_TRACKING_ERROR_PERCENT:
-            raise ValueError("J6 target exceeds 5% measured tracking/alignment limit; move more slowly")
+        if not self.changed and abs(target - measured) > MAX_GOAL_LEAD_PERCENT:
+            raise ValueError(
+                f"J6 startup alignment exceeds 5 percentage points: "
+                f"leader={target:.2f}%, follower={measured:.2f}%"
+            )
+        self._check_progress(target, measured)
         if not self.changed:
             raw = self._raw_position()
             if self.bus.read("Torque_Enable", MOTOR, normalize=False, num_retry=2):
@@ -97,11 +110,39 @@ class GripperFollower(GripperLeader):
             self.bus.write(
                 "Goal_Position", MOTOR, raw, normalize=False, num_retry=0,
             )
-            speed = min(self.previous_speed or HOME_SPEED, HOME_SPEED)
-            self.bus.write("Goal_Velocity", MOTOR, speed, normalize=False, num_retry=0)
+            self.speed = min(self.previous_speed or HOME_SPEED, HOME_SPEED)
+            self.bus.write("Goal_Velocity", MOTOR, self.speed, normalize=False, num_retry=0)
             # An uncertain enable acknowledgement still requires torque-OFF cleanup.
             self.bus.write("Torque_Enable", MOTOR, 1, normalize=False, num_retry=0)
-        self.bus.write("Goal_Position", MOTOR, target, num_retry=0)
+        # Bound the applied goal, not the leader's requested position. Normal
+        # servo lag must not be mistaken for a calibration/alignment failure.
+        applied = measured + max(
+            -MAX_GOAL_LEAD_PERCENT, min(MAX_GOAL_LEAD_PERCENT, target - measured),
+        )
+        self.bus.write("Goal_Position", MOTOR, applied, num_retry=0)
+        self.last_goal = applied
+
+    def _check_progress(self, target, measured):
+        now = monotonic()
+        direction = 1 if target > measured else -1
+        pending = (
+            self.last_goal is not None
+            and abs(self.last_goal - measured) > PROGRESS_TOLERANCE_PERCENT
+            and (self.last_goal - measured) * (target - measured) > 0
+            and abs(target - measured) > PROGRESS_TOLERANCE_PERCENT
+        )
+        if not pending or direction != self.progress_direction:
+            self.progress_position, self.progress_at = measured, now
+            self.progress_direction = direction
+        elif (measured - self.progress_position) * direction >= MIN_PROGRESS_PERCENT:
+            self.progress_position, self.progress_at = measured, now
+        elif now - self.progress_at >= NO_PROGRESS_TIMEOUT_S:
+            raise RuntimeError(
+                f"J6 no measured progress for {NO_PROGRESS_TIMEOUT_S:g}s: "
+                f"leader={target:.2f}%, follower={measured:.2f}%, "
+                f"previous goal={self.last_goal:.2f}%, speed register={self.speed}. "
+                "Stop and check for obstruction or an unexpectedly low speed setting."
+            )
 
     def disconnect(self):
         try:

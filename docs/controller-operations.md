@@ -179,7 +179,8 @@ leader calibration:
 
 The `--fps` value is the maximum leader sample rate (default 30, valid 1-60).
 For a gripper-only validation test, add `--J6-only`; this deliberately
-disables whole-arm startup sync and uses a separate J6-only route. Follow the
+replaces whole-arm startup sync with a confirmed J6-only sync and uses a
+separate J6-only route. Follow the
 [J6-only live test procedure](arm-calibration.md#j6-only-live-following-test)
 instead of the normal full-arm startup procedure below.
 

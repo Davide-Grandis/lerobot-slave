@@ -258,17 +258,23 @@ button is not a gripper-only control.
    accessible. Keep fingers/objects clear of both grippers and maintain a direct
    or live camera view of the follower. Nothing should be held by the gripper:
    stopping releases it.
-2. With torque OFF, align both grippers to the same reported opening percentage,
-   preferably an interior value around 40-60%. Use Arms Monitor if needed, then
-   stop that monitor so the CLI can own the ports. On the follower, `J6 TD`
+2. With torque OFF, choose a safe leader starting opening, preferably around
+   40-60%. Manual follower alignment is not required, but both encoder readings
+   must remain inside their saved ranges. Use Arms Monitor if needed,
+   then stop that monitor so the CLI can own the ports. On the follower, `J6 TD`
    explicitly disables J6 only. Do not release the other joints.
 3. Start the command. It verifies J6's saved/live calibration on both arms,
    checks torque is already OFF, reports the initial percentages and waits for
-   `GRIPPER`. Align within 1 percentage point before confirming. No startup
-   movement or automatic synchronization is performed.
-4. After confirmation, move only the leader gripper slowly through a small
-   interior interval initially. The terminal prints leader/follower percent
+   Enter. Clear the follower gripper's path before confirming: it will move.
+   Hold the leader still while J6 gradually synchronizes to the leader opening
+   captured after confirmation. No J1-J5 startup goals or torque changes are sent.
+   After Enter the CLI shows `WAIT - syncing J6` and prefixes sync progress
+   with `WAIT`. The Pi's hardware-ready status is not displayed as teleop readiness.
+4. Live following begins only after fresh measured J6 readback is within
+   1 percentage point of that fixed startup target. Then move the leader slowly
+   through a small interior interval initially. The terminal prints leader/follower percent
    and delta at about 4 Hz. Check direction, settling and relative travel.
+   The CLI displays `Ready for teleop` when live following begins, not before.
 5. Stop with Ctrl-C. Follower J6 torque is disabled and its previous speed setting
    restored. Inspect before restarting; there is no automatic reconnect.
 
@@ -285,10 +291,30 @@ existing lower nonzero speed). J1-J5 calibration, goals and torque are untouched
 their remaining mismatches do not prevent the isolated test and are not
 considered validated by it.
 
-The 500 ms command watchdog, sequence/timestamp validation and 5-percentage-point
-per-target guard remain active. An additional measured tracking-error limit of
-5 percentage points stops the test if the leader moves too fast or the gripper
-lags/obstructs. Missing/stale follower readback also stops the CLI. These checks
-are not a force limiter or a certified emergency stop. Stop immediately at
-unexpected resistance or movement. Full-arm teleoperation must remain stopped
-until J1-J5 are repaired and physically validated separately.
+The 500 ms command watchdog and sequence/timestamp validation remain active.
+During following, every applied goal is bounded to at most 5 percentage points
+from the measured follower position. The requested leader position may be
+farther ahead because the follower has a deliberately reduced speed. Such lag
+does not immediately stop the test: only the latest request is used, with no
+queued backlog. A leader reversal replaces the previous goal immediately.
+Startup alignment checks remain unchanged.
+
+While an applied goal is more than 1 percentage point away and the leader
+continues requesting movement in that direction, the follower must make at
+least 0.25 percentage points of measured progress within 1 second. Otherwise
+the test stops with measured/requested/previous-goal percentages and the speed
+register value. Check for obstruction or an unexpectedly low speed setting
+before retrying; do not bypass the stop. Small encoder jitter does not count as
+progress. Missing/stale follower readback also stops the CLI. These checks are
+not a force limiter or a certified emergency stop. Stop immediately at unexpected
+resistance or movement. Full-arm teleoperation must remain stopped until J1-J5
+are repaired and physically validated separately.
+
+J6 startup sync first sends the measured follower opening to preserve the Pi's
+first-target alignment guard, then sends only J6 goals at most 2.5 percentage
+points from measured position every 0.1 seconds. Keepalives preserve the command
+watchdog while moving/settling. The leader startup target stays fixed throughout
+sync, even if the leader is moved. Stale feedback, cancellation, driver errors
+or a 30-second timeout stop the session instead of entering live following.
+`--no-startup-sync` opts out: in that case manually align J6 within 1 percentage
+point before pressing Enter, or startup is rejected.

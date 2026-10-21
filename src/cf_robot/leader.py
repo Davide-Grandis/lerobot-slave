@@ -33,6 +33,61 @@ async def stream_status(socket, on_status):
     raise ConnectionError("follower connection closed")
 
 
+async def sync_gripper(socket, reader, feedback, target, seq, stop, on_status):
+    """Synchronize only J6 to a fixed startup snapshot using measured readback."""
+    on_status({"type": "status", "state": "synchronizing gripper.pos"})
+    deadline = time.monotonic() + STARTUP_SYNC_SETTLE_TIMEOUT_S
+    seeded = False
+    final_generation = None
+    last_report = 0
+    while not stop.is_set():
+        if reader.done():
+            reader.result()
+        received_at = feedback["received_at"]
+        if received_at is None or time.monotonic() - received_at > 0.5:
+            raise RuntimeError("fresh J6 follower readback lost during startup sync")
+        measured = feedback["observation"]["gripper.pos"]
+        if (
+            final_generation is not None
+            and feedback["generation"] > final_generation
+            and abs(target - measured) <= STARTUP_SYNC_TOLERANCE
+        ):
+            on_status({"type": "status", "state": "J6 startup sync complete"})
+            return seq
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"J6 startup sync timed out: follower={measured:.2f}%, "
+                f"leader startup target={target:.2f}%; inspect the gripper"
+            )
+        if not seeded:
+            # The Pi's first-target alignment guard remains intact: arm while
+            # holding the measured follower position, then begin the J6 ramp.
+            goal = measured
+            seeded = True
+        else:
+            goal = max(
+                measured - STARTUP_SYNC_STEP_UNITS, min(measured + STARTUP_SYNC_STEP_UNITS, target),
+            )
+        if goal == target and final_generation is None:
+            final_generation = feedback["generation"]
+        seq += 1
+        await socket.send(json.dumps(
+            action_message(seq, {"gripper.pos": goal}, GRIPPER_JOINTS),
+            separators=(",", ":"),
+        ))
+        if time.monotonic() - last_report >= 0.25:
+            on_status({
+                "type": "gripper_sample", "leader_percent": target,
+                "follower_percent": measured,
+            })
+            last_report = time.monotonic()
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=STARTUP_SYNC_STEP_DELAY_S)
+        except TimeoutError:
+            pass
+    return seq
+
+
 async def run_teleop(
     url,
     port,
@@ -50,6 +105,7 @@ async def run_teleop(
     on_status = on_status or (lambda message: None)
     leader_factory = leader_factory or (lambda: make_leader(port, arm_id))
     joints = GRIPPER_JOINTS if gripper_only else JOINTS
+    sync_gripper_at_start = gripper_only and sync_at_start
     if gripper_only:
         url = gripper_control_url(url)
         sync_at_start = False
@@ -85,7 +141,7 @@ async def run_teleop(
                     "check the USB port and close any other process using the leader"
                 )
             on_status({"type": "status", "state": "leader connected"})
-            latest_feedback = {"observation": None, "received_at": None}
+            latest_feedback = {"observation": None, "received_at": None, "generation": 0}
 
             def handle_status(message):
                 if message.get("type") == "status" and message.get("observation"):
@@ -99,6 +155,7 @@ async def run_teleop(
                                 return
                         latest_feedback["observation"] = validate_action(message["observation"], joints)
                         latest_feedback["received_at"] = time.monotonic()
+                        latest_feedback["generation"] += 1
                     except (KeyError, TypeError, ValueError):
                         pass
                 on_status(message)
@@ -115,12 +172,18 @@ async def run_teleop(
                 )
                 confirmation = await asyncio.to_thread(
                     input,
-                    "Secure both arms, clear jaws/objects, align grippers within 1%. "
-                    "J6 will be powered while streaming and released on stop. "
-                    "Type GRIPPER to arm J6 only: ",
+                    "Secure both arms and clear jaws/objects. "
+                    + (
+                        "The follower gripper will sync to the leader; hold the leader still. "
+                        if sync_gripper_at_start else "Align grippers within 1%. "
+                    )
+                    + "J6 will be powered while streaming and released on stop. "
+                    "Press Enter to continue (Ctrl-C cancels): ",
                 )
-                if confirmation.strip() != "GRIPPER":
+                if confirmation.strip():
                     raise RuntimeError("gripper-only test cancelled without arming")
+                if sync_gripper_at_start:
+                    on_status({"type": "status", "state": "waiting for J6 startup sync"})
                 deadline = time.monotonic() + 2
                 while (
                     latest_feedback["received_at"] is None
@@ -133,7 +196,18 @@ async def run_teleop(
                     await asyncio.sleep(0.05)
                 initial = await asyncio.to_thread(leader.get_action)
                 measured = latest_feedback["observation"]
-                if abs(initial["gripper.pos"] - measured["gripper.pos"]) > STARTUP_SYNC_TOLERANCE:
+                if sync_gripper_at_start:
+                    print(
+                        f"J6 startup sync: follower={measured['gripper.pos']:.2f}% -> "
+                        f"leader={initial['gripper.pos']:.2f}%"
+                    )
+                    seq = await sync_gripper(
+                        socket, reader, latest_feedback, initial["gripper.pos"],
+                        seq, stop, on_status,
+                    )
+                    if stop.is_set():
+                        return
+                elif abs(initial["gripper.pos"] - measured["gripper.pos"]) > STARTUP_SYNC_TOLERANCE:
                     raise RuntimeError(
                         f"align J6 before starting: leader={initial['gripper.pos']:.2f}%, "
                         f"follower={measured['gripper.pos']:.2f}%; no startup movement was sent"
@@ -322,20 +396,32 @@ def main():
     )
     args = parser.parse_args()
     last_printed_state = None
+    waiting_for_sync = False
 
     def report_status(message):
-        nonlocal last_printed_state
+        nonlocal last_printed_state, waiting_for_sync
+        state = message.get("state")
+        if args.gripper_only:
+            if state in ("waiting for J6 startup sync", "synchronizing gripper.pos"):
+                waiting_for_sync = True
+                state = "WAIT - syncing J6; hold the leader still."
+            elif state == "running":
+                waiting_for_sync = False
+                state = "Ready for teleop"
+            elif state in ("ready", "J6 startup sync complete"):
+                # Pi hardware readiness is not permission to start teleoperating.
+                return
         if message.get("type") == "gripper_sample":
             leader_percent = message["leader_percent"]
             follower_percent = message["follower_percent"]
             print(
+                f"{'WAIT - ' if waiting_for_sync else ''}"
                 f"J6 leader={leader_percent:.2f}%  follower={follower_percent:.2f}%  "
                 f"delta={leader_percent - follower_percent:+.2f} percentage points"
             )
             return
-        state = message.get("state")
         if state and state != last_printed_state:
-            print(state)
+            print(state, flush=True)
             last_printed_state = state
 
     try:

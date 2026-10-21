@@ -667,9 +667,10 @@ This uses a separate J6-only control route; normal teleoperation still sends
 all six joints even if you move only the leader gripper. See
 [the J6-only live test procedure](docs/arm-calibration.md#j6-only-live-following-test).
 The isolated mode requires consistent J6 calibration and both grippers' torque
-OFF at startup, leaves J1-J5 goals/torque untouched, disables whole-arm startup
-sync and asks you to align J6 within 1 percentage point before typing `GRIPPER`.
-Only follower J6 is then powered; Ctrl-C or watchdog failure releases it.
+OFF at startup and leaves J1-J5 goals/torque untouched. After you press Enter,
+only J6 is powered and gradually synchronized to the leader's startup opening.
+Live following begins after measured readback is within 1 percentage point.
+Hold the leader still during sync; Ctrl-C or watchdog failure releases J6.
 
 #### Remote follower parking commands (WSS)
 

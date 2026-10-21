@@ -52,7 +52,10 @@ acknowledges `mode=gripper-only` and `joints=["gripper.pos"]`; every action and
 observation contains only that joint. Other-joint frames are rejected rather
 than padded with fixed targets. The existing `/control` route still requires
 all six joints. Gripper-only startup is read-only until the first aligned target;
-there is no full-arm SDK connect/configure or startup sync.
+there is no full-arm SDK connect/configure or whole-arm startup sync. After
+confirmation, the Mac seeds the measured J6 position, ramps only J6 toward a
+fixed leader startup snapshot and waits for fresh measured settling before
+live following. The Pi's first-target guard remains unchanged.
 
 The Pose Monitor supports independent local leader or remote follower sessions,
 as well as comparison. Calibration maintenance, monitoring and teleoperation are

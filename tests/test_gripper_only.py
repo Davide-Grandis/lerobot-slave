@@ -53,6 +53,14 @@ class GripperBus(RestoreBus):
                 raise OSError("uncertain torque-enable acknowledgement")
 
 
+class LaggingGripperBus(GripperBus):
+    def write(self, register, motor, value, **kwargs):
+        position = self.native_position
+        super().write(register, motor, value, **kwargs)
+        if register == "Goal_Position":
+            self.native_position = position
+
+
 class GripperFixture:
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -137,6 +145,80 @@ class GripperOnlyTests(GripperFixture, unittest.TestCase):
             robot.send_action({joint: 50 for joint in JOINTS})
         robot.disconnect()
         self.assertEqual(self.bus.writes, [])
+
+    def test_moving_follower_can_lag_leader_without_aborting(self):
+        self.device.bus = self.bus = LaggingGripperBus()
+        robot = GripperFollower(self.device)
+        clock = [0.0]
+        with patch("cf_robot.gripper_control.monotonic", side_effect=lambda: clock[0]):
+            robot.connect()
+            initial = robot.get_observation()["gripper.pos"]
+            robot.send_action({"gripper.pos": initial})
+            for step in range(1, 13):
+                clock[0] += 0.1
+                self.bus.native_position += 7
+                measured = robot.get_observation()["gripper.pos"]
+                robot.send_action({"gripper.pos": initial + 2 * step})
+                applied = self.bus.writes[-1][2]
+                self.assertLessEqual(abs(applied - measured), 5.0 + 1e-9)
+            self.assertTrue(self.bus.torque["gripper"])
+            robot.disconnect()
+        self.assertFalse(self.bus.torque["gripper"])
+
+    def test_no_progress_stops_before_sending_another_goal(self):
+        self.device.bus = self.bus = LaggingGripperBus()
+        robot = GripperFollower(self.device)
+        clock = [0.0]
+        with patch("cf_robot.gripper_control.monotonic", side_effect=lambda: clock[0]):
+            robot.connect()
+            measured = robot.get_observation()["gripper.pos"]
+            robot.send_action({"gripper.pos": measured})
+            clock[0] = 0.1
+            robot.send_action({"gripper.pos": measured + 10})
+            writes = len(self.bus.writes)
+            clock[0] = 1.2
+            with self.assertRaisesRegex(RuntimeError, "no measured progress"):
+                robot.send_action({"gripper.pos": measured + 10})
+            self.assertEqual(len(self.bus.writes), writes)
+            robot.disconnect()
+        self.assertFalse(self.bus.torque["gripper"])
+
+    def test_leader_reversal_replaces_lagging_goal_immediately(self):
+        self.device.bus = self.bus = LaggingGripperBus()
+        robot = GripperFollower(self.device)
+        clock = [0.0]
+        with patch("cf_robot.gripper_control.monotonic", side_effect=lambda: clock[0]):
+            robot.connect()
+            measured = robot.get_observation()["gripper.pos"]
+            robot.send_action({"gripper.pos": measured})
+            clock[0] = 0.1
+            robot.send_action({"gripper.pos": measured + 20})
+            self.assertAlmostEqual(self.bus.writes[-1][2], measured + 5)
+            clock[0] = 0.9
+            robot.send_action({"gripper.pos": measured - 20})
+            self.assertAlmostEqual(self.bus.writes[-1][2], measured - 5)
+            clock[0] = 1.2
+            self.bus.native_position -= 5
+            robot.send_action({"gripper.pos": measured - 20})
+            robot.disconnect()
+        self.assertFalse(self.bus.torque["gripper"])
+
+    def test_active_session_bounds_applied_goal_for_large_leader_change(self):
+        robot = GripperFollower(self.device)
+        session = FollowerSession(lambda: robot, joints=GRIPPER_JOINTS, watchdog=1)
+        session.start()
+        try:
+            self.assertTrue(session.wait_ready(1))
+            initial = session.initial_observation["gripper.pos"]
+            session.submit({"gripper.pos": initial})
+            self.assertTrue(wait_for(lambda: robot.last_goal is not None))
+            session.submit({"gripper.pos": 90})
+            self.assertTrue(wait_for(lambda: robot.last_goal is not None and robot.last_goal > initial + 4))
+            self.assertIsNone(session.error)
+            self.assertLessEqual(robot.last_goal, initial + 5.0 + 1e-9)
+        finally:
+            session.stop()
+        self.assertTrue(all(write[1] == "gripper" for write in self.bus.writes))
 
     def test_watchdog_releases_only_j6(self):
         robot = GripperFollower(self.device)
