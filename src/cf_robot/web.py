@@ -8,7 +8,6 @@ import hmac
 import json
 import logging
 import os
-import secrets
 import time
 from urllib.parse import urlsplit
 
@@ -20,6 +19,7 @@ from websockets.asyncio.client import connect
 
 from cf_robot.auth import access_headers
 from cf_robot.operator_session import OperatorSession
+from cf_robot.pairing import generate_pairing_code
 from cf_robot.protocol import validate_action
 from cf_robot.web_calibration import BrowserCalibration, install_calibration_routes
 from cf_robot.web_pose import BrowserPoseMonitor, install_pose_routes
@@ -53,7 +53,7 @@ def create_app(
     video_url = url.rstrip("/") + "/video"
     access_headers(control_url)
     hosted_origin = (operator_origin or os.environ.get("CF_ROBOT_OPERATOR_ORIGIN", "")).rstrip("/")
-    local_bridge_token = bridge_token or os.environ.get("CF_ROBOT_BRIDGE_TOKEN") or secrets.token_urlsafe(32)
+    local_bridge_token = bridge_token or os.environ.get("CF_ROBOT_BRIDGE_TOKEN") or generate_pairing_code()
     task = None
     runtime = None
     stop_event = None
@@ -392,7 +392,7 @@ def create_app(
             body = await request.json()
             if not isinstance(body, dict):
                 raise ValueError("request body must be a JSON object")
-            result = runtime.set_mode(body.get("mode"))
+            result = runtime.set_mode(body.get("mode"), confirm_sync=body.get("confirm_sync") is True)
         except (ValueError, RuntimeError, AttributeError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return result
@@ -473,7 +473,7 @@ def main():
         base = "ws://" + base[len("http://"):]
     if urlsplit(base).path not in ("", "/"):
         parser.error("--url must be a hostname without a path")
-    bridge_token = os.environ.get("CF_ROBOT_BRIDGE_TOKEN") or secrets.token_urlsafe(32)
+    bridge_token = os.environ.get("CF_ROBOT_BRIDGE_TOKEN") or generate_pairing_code()
     app = create_app(
         base,
         args.port,

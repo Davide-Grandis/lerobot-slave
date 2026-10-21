@@ -33,6 +33,9 @@ the Pi.
 | [`src/cf_robot/follower.py`](../src/cf_robot/follower.py) | Serve `/health`, `/control`, `/video`, `/update`, `/calibrate`, `/maintenance`, and `/monitor`; authenticate WebSocket upgrades; allow one control and one video connection. |
 | [`src/cf_robot/control.py`](../src/cf_robot/control.py) | Own the follower in one thread; retain only the latest target; refresh measured servo positions; check command gap and joint jumps; disconnect on stop/error. |
 | [`src/cf_robot/gripper_control.py`](../src/cf_robot/gripper_control.py) | Isolate J6 through direct-bus adapters, without whole-arm configuration or J1-J5 goal/torque writes; check J6 calibration/alignment and release only J6 on stop. |
+| [`src/cf_robot/teleop_runtime.py`](../src/cf_robot/teleop_runtime.py) | Shared feedback validation, timing diagnostics, bounded sequential startup sync and measured settling for normal CLI, browser leader mode and isolated tests. |
+| [`src/cf_robot/teleop_motion.py`](../src/cf_robot/teleop_motion.py) | Shared per-joint applied-goal windows and direction-aware no-progress detection, using degrees for J1-J5 and percent for J6. |
+| [`src/cf_robot/teleop_hardware.py`](../src/cf_robot/teleop_hardware.py) | Shared saved/live calibration preflight and direct-bus adapters; seed selected goals before enabling motors, preserve calibration and hold a full arm on stop. |
 | [`src/cf_robot/protocol.py`](../src/cf_robot/protocol.py) | Define protocol version 1, joint names, action validation, sequence and timestamp checks. |
 | [`src/cf_robot/auth.py`](../src/cf_robot/auth.py) | Validate the remote URL and attach Access and origin-key headers from the laptop environment. |
 | [`src/cf_robot/operator_session.py`](../src/cf_robot/operator_session.py) | Own one remote control socket; route either manual jog targets or leader samples, never both; refresh the manual target to satisfy the follower watchdog. |
@@ -45,6 +48,9 @@ the Pi.
 | [`deploy/`](../deploy/) | Example Pi environment, follower service, and the root-owned WSS update watcher/service. |
 
 ## Control and video protocol
+
+See [Shared Teleoperation Policy](teleoperation.md). Joint-only mode selects
+the joints; it does not select a separate tracking/feedback/sync algorithm.
 
 The CLI's `--J6-only` mode uses authenticated `WS /control/gripper`,
 sharing the normal control/maintenance lock. Its ready message explicitly
@@ -68,7 +74,7 @@ settings. See [Arm Calibration](arm-calibration.md) for the physical procedure,
 evidence limits and setting safeguards.
 
 - The Pi accepts `/control` only after checking `X-CF-Robot-Key`. It creates
-  one `FollowerSession`, connects the arm with `calibrate=False`, reads its
+  one `FollowerSession`, performs shared read-only calibration preflight, reads its
   current joint positions, then sends a versioned `ready` message containing
   that measured pose. The Mac parking client records this pose locally or
   uses it as the starting point when sending a saved parking pose.
@@ -88,10 +94,10 @@ evidence limits and setting safeguards.
   timestamp is a freshness check, not a clock-synchronization mechanism.
   A protocol failure ends the session; there is no automatic replay.
 - The follower thread replaces an unprocessed target with the newest one.
-  It checks each accepted target against the initial measured pose or the
-  previously sent target (maximum 5 units per joint: degrees for five joints,
-  normalized 0-100 values for the gripper). It is **not** a
-  real-time servo loop, calibrated joint-limit model, or guaranteed
+  Initial alignment is checked; shared adapters then bound applied goals
+  against measured positions (maximum 5 degrees or percentage points) and check
+  progress and saved ranges. A distant leader request does not cause false lag
+  faults. This is **not** a real-time servo loop, collision model or guaranteed
   velocity/force limiter. The Pi reads measured servo positions in the same
   single-owner hardware thread and sends them in status messages about every
   100 ms. These are feedback values, not target echoes.

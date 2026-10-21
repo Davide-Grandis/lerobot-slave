@@ -234,9 +234,11 @@ function updateButtons(status) {
   elements.jogList.querySelectorAll(".jog-button").forEach((button) => {
     button.disabled = !connected || state.mode !== "manual" || state.manualBusy || stopped;
   });
-  elements.sessionState.textContent = String(status.state || "idle").replaceAll("_", " ").toUpperCase();
+  elements.sessionState.textContent = status.state === "synchronizing" ? "WAIT"
+    : status.state === "ready" && status.mode === "leader" ? "Ready for teleop"
+      : String(status.state || "idle").replaceAll("_", " ").toUpperCase();
   elements.sessionState.dataset.state = status.state || "idle";
-  elements.sessionDetail.textContent = status.error
+  elements.sessionDetail.textContent = status.error || status.teleop_message
     || (status.running
       ? status.mode === "leader"
         ? "Leader streaming is active. Monitor the measured follower pose and camera."
@@ -244,7 +246,8 @@ function updateButtons(status) {
       : cameraLive
         ? "Camera is live. Connect the follower when the workspace is clear."
         : "Camera must be live before a control session can connect.");
-  elements.followerConnection.textContent = connected ? "CONNECTED" : status.running ? "CONNECTING" : "OFFLINE";
+  elements.followerConnection.textContent = connected || status.state === "synchronizing"
+    ? "CONNECTED" : status.running ? "CONNECTING" : "OFFLINE";
   elements.leaderConnection.textContent = status.leader_connected ? "CONNECTED" : "NOT CONNECTED";
   elements.alignmentState.textContent = !status.leader_connected
     ? "NOT CHECKED"
@@ -459,10 +462,14 @@ async function emergencyStop() {
 }
 
 async function changeMode(mode) {
+  if (mode === "leader" && !window.confirm(
+    "The follower will synchronize to the leader, one joint at a time. "
+    + "Secure both arms, clear the workspace and hold the leader still. Continue?",
+  )) return;
   try {
     const result = await agentRequest("/api/mode", {
       method: "POST",
-      body: JSON.stringify({ mode }),
+      body: JSON.stringify({ mode, confirm_sync: mode === "leader" }),
     });
     state.mode = result.mode;
     elements.manualMode.classList.toggle("active", state.mode === "manual");
@@ -481,7 +488,7 @@ async function connectLeader() {
     elements.leaderConnect.disabled = true;
     elements.leaderConnect.textContent = "Connecting…";
     await agentRequest("/api/leader/connect", { method: "POST" });
-    announce("Leader connected. Align both arms before selecting leader mode.", "success");
+    announce("Leader connected. Select Leader arm to confirm startup synchronization.", "success");
     await pollStatus();
   } catch (error) {
     announce(error.message, "error");

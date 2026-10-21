@@ -29,6 +29,7 @@ from cf_robot.servo_maintenance import (
     read_limits_and_pose,
 )
 from cf_robot.system_commands import POWER_REQUEST, register_system_commands
+from cf_robot.teleop_hardware import TeleopFollower
 
 LOG = logging.getLogger(__name__)
 UPDATE_REQUEST = Path("/var/lib/cf-robot/update-request")
@@ -58,6 +59,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
     maintenance_requested = False
     monitor_requested = False
     follower_factory = factory or (lambda: make_follower(port, arm_id))
+    control_factory = factory or (lambda: TeleopFollower(make_follower(port, arm_id)))
     camera_factory = camera_factory or (lambda: make_camera(camera_device, width, height, video_fps))
 
     def reserve_power():
@@ -114,7 +116,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
         async with control_lock:
             joints = GRIPPER_JOINTS if gripper_only else JOINTS
             session_factory = (
-                (lambda: GripperFollower(follower_factory())) if gripper_only else follower_factory
+                (lambda: GripperFollower(follower_factory())) if gripper_only else control_factory
             )
             session = FollowerSession(session_factory, joints=joints)
             session.start()
@@ -127,6 +129,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                         "type": "ready",
                         "version": VERSION,
                         "observation": session.initial_observation,
+                        "observed_at": session.observed_at,
                         **({"mode": "gripper-only", "joints": list(joints)} if gripper_only else {}),
                     }
                 )

@@ -21,6 +21,7 @@ except ImportError:
 MOCK_BRIDGE = """
 const originalFetch = window.fetch.bind(window);
 window.testCommands = [];
+window.testModeRequests = [];
 window.testControl = {running:false,state:'idle',camera_live:false};
 window.testPoseOffline = false;
 window.testLeaderOffset = 0;
@@ -60,6 +61,14 @@ window.fetch = async (url, options={}) => {
     return reply({api_version:1});
   }
   if (path === '/api/status') return reply(window.testControl);
+  if (path === '/api/mode') {
+    const body=JSON.parse(options.body);
+    window.testModeRequests.push(body);
+    window.testControl={...window.testControl,mode:body.mode,state:'synchronizing',
+      teleop_message:'WAIT - synchronizing follower'};
+    return reply(window.testControl);
+  }
+  if (path === '/api/heartbeat') return reply({ok:true});
   if (path === '/api/video/frame') { window.testVideoRequests++; return reply({},503); }
   if (path === '/api/pose/start') {
     sides=JSON.parse(options.body).sides || 'both'; running=true; return reply({running});
@@ -383,6 +392,28 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                       document.querySelector('.session-panel').offsetParent !== null &&
                       document.getElementById('pose-panel').hidden
                     """))
+                    await evaluate("""
+                      window.testControl={...window.testControl,running:true,state:'ready',
+                        mode:'manual',leader_connected:true};
+                      window.confirm=message=>{window.testModeConfirmation=message;return true;};
+                    """)
+                    await wait_for("!document.getElementById('leader-mode').disabled")
+                    await evaluate("document.getElementById('leader-mode').click()")
+                    await wait_for("document.getElementById('session-state').textContent === 'WAIT'")
+                    self.assertEqual(await evaluate("window.testModeRequests"), [
+                        {"mode": "leader", "confirm_sync": True},
+                    ])
+                    self.assertIn("one joint at a time", await evaluate("window.testModeConfirmation"))
+                    self.assertIn("WAIT", await evaluate("document.getElementById('session-detail').textContent"))
+                    self.assertFalse(await evaluate("document.getElementById('stop-control').disabled"))
+                    await evaluate("""
+                      window.testControl={...window.testControl,state:'ready',
+                        teleop_message:'Ready for teleop'};
+                    """)
+                    await wait_for("document.getElementById('session-state').textContent === 'Ready for teleop'")
+                    self.assertEqual(await evaluate(
+                        "document.getElementById('session-detail').textContent",
+                    ), "Ready for teleop")
                     self.assertFalse([event for event in self.events
                                       if event.get("method") == "Runtime.exceptionThrown"])
                 chrome.terminate()

@@ -24,6 +24,7 @@ class GripperClientTests(GripperFixture, unittest.IsolatedAsyncioTestCase):
         self, follower_percent=50, acknowledge=True, confirm="",
         stop_after=2, stale_after_one=False, sync=True, stalled=False,
         stale_during_sync=False, cancel_sync=False, change_leader=False, cancel_after=None,
+        feedback_gap=0, cached_feedback=False,
     ):
         stop = asyncio.Event()
         accepted, paths = [], []
@@ -32,6 +33,7 @@ class GripperClientTests(GripperFixture, unittest.IsolatedAsyncioTestCase):
         self.live_index = None
         state = {"measured": follower_percent, "goal": follower_percent}
         self.feedback_at_running = None
+        self.gap_goals = []
 
         def on_status(message):
             name = message.get("state")
@@ -53,16 +55,28 @@ class GripperClientTests(GripperFixture, unittest.IsolatedAsyncioTestCase):
             }))
 
             async def statuses():
+                gap_done = False
+                cached_timestamp = None
                 while True:
+                    if accepted and feedback_gap and not gap_done:
+                        gap_done = True
+                        start = len(accepted)
+                        await asyncio.sleep(feedback_gap)
+                        self.gap_goals = accepted[start:]
                     if not stalled:
                         state["measured"] += max(-1, min(1, state["goal"] - state["measured"]))
                     stale = accepted and (
                         stale_during_sync or (stale_after_one and self.live_index is not None)
                     )
+                    observed_at = time.time() - (5 if stale else 0)
+                    if accepted and cached_feedback:
+                        if cached_timestamp is None:
+                            cached_timestamp = observed_at
+                        observed_at = cached_timestamp
                     await socket.send(json.dumps({
                         "type": "status", "state": "ready",
                         "observation": {"gripper.pos": state["measured"]},
-                        "observed_at": time.time() - (5 if stale else 0),
+                        "observed_at": observed_at,
                     }))
                     await asyncio.sleep(0.02)
 
@@ -174,6 +188,25 @@ class GripperClientTests(GripperFixture, unittest.IsolatedAsyncioTestCase):
             await self.exercise(follower_percent=20, stale_during_sync=True)
         self.assertNotIn("running", self.states)
 
+    async def test_brief_feedback_gap_holds_sync_goal_and_recovers(self):
+        await self.exercise(follower_percent=20, feedback_gap=0.7)
+        self.assertIn("waiting for J6 feedback", self.states)
+        self.assertIn("J6 startup sync complete", self.states)
+        self.assertLessEqual(abs(self.feedback_at_running - 50.14), 1)
+        self.assertTrue(self.gap_goals)
+        self.assertEqual(len({action["gripper.pos"] for action in self.gap_goals}), 1)
+
+    async def test_persistent_feedback_gap_stops_with_network_diagnostics(self):
+        with self.assertRaisesRegex(RuntimeError, "last status packet="):
+            await self.exercise(follower_percent=20, feedback_gap=1.3)
+        self.assertIn("waiting for J6 feedback", self.states)
+        self.assertNotIn("running", self.states)
+
+    async def test_repeated_cached_samples_do_not_refresh_readback_timer(self):
+        with self.assertRaisesRegex(RuntimeError, "timestamp age="):
+            await self.exercise(follower_percent=20, cached_feedback=True)
+        self.assertIn("waiting for J6 feedback", self.states)
+        self.assertNotIn("running", self.states)
     async def test_cancelled_confirmation_never_streams(self):
         with self.assertRaisesRegex(RuntimeError, "cancelled without arming"):
             await self.exercise(confirm="cancel")
@@ -194,6 +227,10 @@ class GripperCliStatusTests(unittest.TestCase):
             on_status({"type": "status", "state": "ready"})
             on_status({"type": "status", "state": "synchronizing gripper.pos"})
             on_status({"type": "gripper_sample", "leader_percent": 50, "follower_percent": 20})
+            on_status({"type": "status", "state": "waiting for J6 feedback"})
+            on_status({"type": "status", "state": "ready"})
+            on_status({"type": "gripper_sample", "leader_percent": 50, "follower_percent": 20})
+            on_status({"type": "status", "state": "synchronizing gripper.pos"})
             on_status({"type": "status", "state": "J6 startup sync complete"})
             on_status({"type": "status", "state": "ready"})
             on_status({"type": "status", "state": "running"})
@@ -211,9 +248,12 @@ class GripperCliStatusTests(unittest.TestCase):
         lines = output.getvalue().splitlines()
         self.assertEqual(lines[0], "WAIT - syncing J6; hold the leader still.")
         self.assertTrue(lines[1].startswith("WAIT - J6 leader="))
-        self.assertEqual(lines[2], "Ready for teleop")
-        self.assertTrue(lines[3].startswith("J6 leader="))
-        self.assertEqual(len(lines), 4)
+        self.assertIn("WAIT - feedback delayed; holding", lines[2])
+        self.assertTrue(lines[3].startswith("WAIT - J6 leader="))
+        self.assertTrue(lines[4].startswith("WAIT - syncing"))
+        self.assertEqual(lines[5], "Ready for teleop")
+        self.assertTrue(lines[6].startswith("J6 leader="))
+        self.assertEqual(len(lines), 7)
 
 
 if __name__ == "__main__":

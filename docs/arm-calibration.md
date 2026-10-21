@@ -1,5 +1,10 @@
 # Inspect, Validate And Set Arm Calibration
 
+Normal teleoperation and joint-only tests use the
+[same shared teleoperation policy](teleoperation.md). Improvements made while
+testing J6 apply to normal CLI and browser leader control too; only the selected
+joints and appropriate stop/holding behavior differ.
+
 Calibration has three independent layers: the saved LeRobot record, the live
 servo configuration and the physical meaning of the resulting joint value.
 Leader/follower comparison is optional, not a substitute for validating each
@@ -314,7 +319,17 @@ J6 startup sync first sends the measured follower opening to preserve the Pi's
 first-target alignment guard, then sends only J6 goals at most 2.5 percentage
 points from measured position every 0.1 seconds. Keepalives preserve the command
 watchdog while moving/settling. The leader startup target stays fixed throughout
-sync, even if the leader is moved. Stale feedback, cancellation, driver errors
+sync, even if the leader is moved. Persistent stale feedback, cancellation, driver errors
 or a 30-second timeout stop the session instead of entering live following.
+For a brief startup feedback gap, after 0.5 seconds the CLI displays
+`WAIT - feedback delayed; holding the last J6 sync goal` and repeats only the
+last bounded goal to maintain the command watchdog. It neither issues a farther
+goal nor enters live following using stale samples. Fresh feedback resumes
+sync; a gap reaching 1 second stops the session. Live following retains its
+0.5-second feedback stop. Repeated copies of the same hardware timestamp do not
+reset these timers. Feedback errors report the ages of the last accepted sample
+and last status packet, plus the last timestamp/validation result, to distinguish
+missing packets from cached samples or clock-offset rejection. The Pi's command
+watchdog and timestamp/sequence limits are unchanged.
 `--no-startup-sync` opts out: in that case manually align J6 within 1 percentage
 point before pressing Enter, or startup is rejected.

@@ -184,21 +184,18 @@ separate J6-only route. Follow the
 [J6-only live test procedure](arm-calibration.md#j6-only-live-following-test)
 instead of the normal full-arm startup procedure below.
 
-By default, if the leader and follower differ by more than 1 unit on any joint
-at startup, the CLI displays both poses and waits for you to press Enter. It
-then gradually moves the follower to the leader's initial pose, one servo at
-a time, using at most 2.5 units per step with 0.1 seconds between steps (a
-commanded ramp of about 25 units per second). The wrist joints move last.
-Keep the workspace clear and do not move the leader until sync completes; the
-CLI waits for measured follower readback to come within 1 unit.
+The CLI displays the poses and asks you to press Enter. It shows **WAIT** while
+the follower synchronizes one joint at a time, using measured-position-based
+steps of at most 2.5 degrees/percentage points every 0.1 seconds. Hold the leader
+still and clear the workspace. **Ready for teleop** appears only after fresh
+measured readback confirms every joint is within 1 unit of the captured pose.
+`--no-startup-sync` requires manual alignment within 1 unit instead.
 
-This does **not** disable the Pi's 5-unit per-target guard. Every sync step
-stays below that guard, which remains active during teleoperation. Actual
-servo speed is hardware-dependent; this ramp is not a velocity/force limit.
-Use `--no-startup-sync` only when the arms have already been aligned manually.
-Startup sync handles only the initial pose difference. If the Pi rejects a
-target later during streaming, inspect the joint-by-joint diagnostic, stop,
-and reduce per-sample leader movement before starting a new session.
+Normal and joint-only operation share the same applied-goal bounds, progress
+checks, feedback grace/diagnostics and watchdogs. Normal mode requires matching
+saved/live calibration on all six joints and holds the arm rather than releasing
+all motors on stop. See [Shared Teleoperation Policy](teleoperation.md) for the
+complete behavior and the browser leader-mode confirmation workflow.
 
 ## Update the Pi over WSS
 

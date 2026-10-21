@@ -64,7 +64,7 @@ class LeaderSyncTests(unittest.IsolatedAsyncioTestCase):
                         "type": "status",
                         "state": "ready",
                         "observation": dict(follower_state["measured"]),
-                        "observed_at": time.time() - 5,
+                        "observed_at": time.time(),
                     }))
                     await asyncio.sleep(0.05)
 

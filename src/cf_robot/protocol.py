@@ -37,7 +37,7 @@ def validate_action(action, joints=JOINTS):
             raise ProtocolError(f"{name} must be a number") from exc
         if not math.isfinite(value) or abs(value) > 360:
             raise ProtocolError(f"{name} is out of range")
-        if joints == GRIPPER_JOINTS and not 0 <= value <= 100:
+        if name == "gripper.pos" and not 0 <= value <= 100:
             raise ProtocolError("gripper target must be between 0 and 100 percent")
         cleaned[name] = value
     return cleaned

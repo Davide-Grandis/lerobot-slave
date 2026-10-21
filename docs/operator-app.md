@@ -88,8 +88,15 @@ source "$HOME/.config/cf-robot/controller.env"
 The leader port is optional when operating only with on-screen controls. The
 controller agent continues to bind only to `127.0.0.1`; do not expose it through
 a router, Tunnel, or reverse proxy. On startup, it prints a one-run pairing
-code. Enter that code in the hosted app's pairing panel. The code is held in
-browser memory only and is not stored in D1 or browser local storage.
+code consisting of two random lowercase words joined by a hyphen, such as
+`quiet-otter`. Enter that code in the hosted app's pairing panel. A new code
+is generated on each controller restart unless `CF_ROBOT_BRIDGE_TOKEN` is
+explicitly set. The code is held in browser memory only and is not stored in
+D1 or browser local storage.
+
+These memorable codes have less entropy than long random tokens. Keep the
+controller loopback-only and the hosted origin restricted as described here;
+set `CF_ROBOT_BRIDGE_TOKEN` to a longer secret if stronger codes are required.
 
 The hosted page uses cross-origin requests to the local controller API. Use a
 current Chromium-based desktop browser and grant its local-network permission

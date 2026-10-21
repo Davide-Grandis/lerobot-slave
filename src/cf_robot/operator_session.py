@@ -9,6 +9,8 @@ from websockets.asyncio.client import connect
 from cf_robot.auth import access_headers
 from cf_robot.hardware import joint_positions, make_leader
 from cf_robot.protocol import VERSION, action_message, validate_action
+from cf_robot.teleop_hardware import TeleopLeader
+from cf_robot.teleop_runtime import Feedback, synchronize
 
 ALIGNMENT_TOLERANCE = 5.0
 OBSERVATION_MAX_AGE_S = 0.5
@@ -42,6 +44,8 @@ class OperatorSession:
         self.socket = None
         self.seq = 0
         self.last_target = None
+        self.feedback = Feedback()
+        self.sync_pending = False
         self.status = {
             "state": "connecting",
             "mode": self.mode,
@@ -53,6 +57,7 @@ class OperatorSession:
             "alignment_errors": {},
             "commands_sent": 0,
             "error": None,
+            "teleop_message": "",
         }
 
     def _publish(self, **updates):
@@ -79,6 +84,7 @@ class OperatorSession:
                 if ready.get("type") != "ready" or ready.get("version") != VERSION:
                     raise RuntimeError("follower did not send a compatible ready message")
                 self.last_target = validate_action(ready["observation"])
+                self.feedback.accept(ready)
                 self._publish(
                     state="ready",
                     follower_positions=self.last_target,
@@ -116,23 +122,30 @@ class OperatorSession:
                 raise RuntimeError(message.get("message", "follower control failed"))
             if message.get("type") != "status":
                 continue
-            updates = {"state": message.get("state", self.status["state"])}
-            observation = message.get("observation")
-            if observation:
-                updates["follower_positions"] = validate_action(observation)
-                updates["follower_observed_at"] = message.get("observed_at", time.time())
+            updates = {}
+            if self.feedback.accept(message):
+                updates["follower_positions"] = dict(self.feedback["observation"])
+                updates["follower_observed_at"] = self.feedback["sampled_at"]
                 self._refresh_alignment(updates)
             self._publish(**updates)
         raise ConnectionError("follower control WebSocket closed")
 
     async def _send_loop(self, socket, reader):
         period = 1 / self.fps
+        deadline = time.monotonic() + 2
+        while not self.feedback.fresh and not self.stop_event.is_set():
+            if reader.done():
+                reader.result()
+            if time.monotonic() >= deadline:
+                raise self.feedback.error("before arming")
+            await asyncio.sleep(0.05)
         while not self.stop_event.is_set():
             if reader.done():
                 reader.result()
             started = time.monotonic()
             target = None
             acknowledged = None
+            mode_at_start = self.mode
             if self.mode == "leader":
                 if self.leader is None:
                     raise RuntimeError("leader arm disconnected while streaming")
@@ -140,6 +153,16 @@ class OperatorSession:
                 if self.mode != "leader":
                     continue
                 self._publish(leader_positions=target)
+                if self.sync_pending:
+                    self.seq = await synchronize(
+                        socket, reader, self.feedback, dict(target), self.seq,
+                        self.stop_event, self._sync_status,
+                    )
+                    if self.stop_event.is_set():
+                        break
+                    self.sync_pending = False
+                    self.last_target = dict(target)
+                    self._publish(state="ready", teleop_message="Ready for teleop")
             else:
                 try:
                     target, acknowledged = await asyncio.wait_for(
@@ -151,6 +174,12 @@ class OperatorSession:
                     target = self.last_target
             if self.stop_event.is_set():
                 break
+            if self.mode != mode_at_start:
+                if acknowledged is not None and not acknowledged.done():
+                    acknowledged.set_exception(RuntimeError("control mode changed before send"))
+                continue
+            if not self.feedback.fresh:
+                raise self.feedback.error("during live following")
             self.seq += 1
             await socket.send(
                 json.dumps(action_message(self.seq, target), separators=(",", ":"))
@@ -165,6 +194,22 @@ class OperatorSession:
                     await asyncio.wait_for(self.stop_event.wait(), timeout=remaining)
                 except asyncio.TimeoutError:
                     pass
+
+    def _sync_status(self, message):
+        if message.get("type") == "sync_target":
+            self.seq = message["seq"]
+            self.last_target = dict(message["target"])
+            self._publish(commands_sent=self.status["commands_sent"] + 1)
+        elif message.get("state") == "waiting for follower feedback":
+            self._publish(
+                state="synchronizing",
+                teleop_message="WAIT - feedback delayed; holding the last sync goal.",
+            )
+        elif str(message.get("state", "")).startswith("synchronizing "):
+            self._publish(
+                state="synchronizing",
+                teleop_message=f"WAIT - {message['state']}; hold the leader still.",
+            )
 
     async def _read_leader(self):
         async with self.leader_io_lock:
@@ -196,6 +241,8 @@ class OperatorSession:
         if self.leader is not None:
             return dict(self.status)
         leader = self.leader_factory()
+        if hasattr(leader, "bus"):
+            leader = TeleopLeader(leader)
         try:
             await asyncio.to_thread(leader.connect, calibrate=False)
             positions = validate_action(joint_positions(await asyncio.to_thread(leader.get_action)))
@@ -212,27 +259,42 @@ class OperatorSession:
         return dict(self.status)
 
     async def disconnect_leader(self):
+        if self.sync_pending:
+            self.stop_event.set()
+        self.sync_pending = False
         self.mode = "manual"
+        if self.feedback.fresh:
+            self.last_target = dict(self.feedback["observation"])
         async with self.leader_io_lock:
             leader, self.leader = self.leader, None
             if leader is not None:
                 await asyncio.to_thread(leader.disconnect)
         self._publish(leader_connected=False, leader_positions=None, aligned=False)
 
-    def set_mode(self, mode):
+    def set_mode(self, mode, confirm_sync=False):
         if mode not in {"manual", "leader"}:
             raise ValueError("mode must be 'manual' or 'leader'")
+        if self.sync_pending:
+            if mode == "leader":
+                return dict(self.status)
+            raise RuntimeError("stop the control session to cancel startup sync")
         if mode == "leader":
             if self.leader is None:
                 raise RuntimeError("connect the leader arm before selecting leader mode")
             observed_at = self.status["follower_observed_at"]
-            if observed_at is None or time.time() - observed_at > OBSERVATION_MAX_AGE_S:
+            if not self.feedback.fresh or observed_at is None or time.time() - observed_at > OBSERVATION_MAX_AGE_S:
                 raise RuntimeError("follower servo feedback is stale; control remains disarmed")
-            if not self.status["aligned"]:
-                raise RuntimeError("align both arms within 5 units on every joint before streaming")
+            if not self.status["aligned"] and confirm_sync is not True:
+                raise RuntimeError("confirm startup sync before the follower moves toward the leader")
+            self.sync_pending = True
+        elif self.feedback.fresh:
+            self.last_target = dict(self.feedback["observation"])
         self.mode = mode
         self._clear_manual_queue("control mode changed before command was sent")
-        self._publish(mode=mode)
+        self._publish(
+            mode=mode, state="synchronizing" if self.sync_pending else "ready",
+            teleop_message="WAIT - preparing startup sync" if self.sync_pending else "Manual mode ready",
+        )
         return dict(self.status)
 
     async def submit_manual(self, action):
@@ -240,6 +302,8 @@ class OperatorSession:
             raise RuntimeError("connect the follower before sending manual targets")
         if self.mode != "manual":
             raise RuntimeError("switch to manual mode before using on-screen controls")
+        if not self.feedback.fresh:
+            raise self.feedback.error("before manual command")
         target = validate_action(action)
         out_of_range = [
             joint

@@ -68,6 +68,10 @@ See the [controller-laptop operations guide](docs/controller-operations.md)
 for arm calibration, parking-pose commands, teleoperation, and Pi updates
 over WSS.
 
+Normal CLI, browser leader control and joint-only tests share the
+[same teleoperation policy](docs/teleoperation.md), including calibration
+preflight, bounded following, measured startup sync and WAIT/Ready reporting.
+
 For independent leader/follower calibration inspection, physical validation
 captures, JSON reports and guided calibration setting from the Arms Monitor,
 see [Arm Calibration](docs/arm-calibration.md). Leader-only and follower-only
@@ -79,17 +83,18 @@ sessions do not require the other arm to be connected.
   user account that will run it. Use the same calibration ID when starting it.
   The CLI's default startup sync can gradually move the follower to the
   leader's initial measured pose after you press Enter to confirm. Keep the
-  workspace clear and hold the leader still during this move. The per-target
-  5-unit limit remains in force; without startup sync, align the arms within
-  **5 units on each joint** before leader streaming. Manual mode starts from
+  workspace clear and hold the leader still during this move. Applied goals
+  stay within 5 degrees/percentage points of measured position; without startup
+  sync, align the arms within **1 unit on each joint**. Manual mode starts from
   the follower's measured pose and sends bounded jogs.
 - Synchronize the laptop and Pi clocks with NTP. Commands more than 500 ms old
   (or over 250 ms in the future) are rejected. If latency or jitter approaches
   this limit, do not operate the robot through this path.
 - A lost connection or 500 ms gap after the first command ends the session.
-  LeRobot's `disconnect()` behavior, including whether torque is released,
-  depends on the hardware/driver. Verify the arm cannot fall or strike anything
-  on disconnect or Pi reboot. Do not rely on software to hold a load.
+  Normal teleoperation attempts to hold the full arm at measured positions;
+  the J6-only test releases only its gripper. Maintenance tools may have different
+  SDK torque behavior. Verify the arm cannot fall on communication/power loss
+  or Pi reboot. Do not rely on software to hold a load.
 - Only one control client and one video client are allowed at a time. The
   follower never automatically resumes movement after a failure or reboot.
 - The hosted operator page requires a live follower camera before connecting
