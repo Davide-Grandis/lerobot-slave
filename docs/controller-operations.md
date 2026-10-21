@@ -178,6 +178,11 @@ leader calibration:
 ```
 
 The `--fps` value is the maximum leader sample rate (default 30, valid 1-60).
+For a gripper-only validation test, add `--J6-only`; this deliberately
+disables whole-arm startup sync and uses a separate J6-only route. Follow the
+[J6-only live test procedure](arm-calibration.md#j6-only-live-following-test)
+instead of the normal full-arm startup procedure below.
+
 By default, if the leader and follower differ by more than 1 unit on any joint
 at startup, the CLI displays both poses and waits for you to press Enter. It
 then gradually moves the follower to the leader's initial pose, one servo at

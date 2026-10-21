@@ -4,8 +4,7 @@ import logging
 import threading
 import time
 
-from cf_robot.hardware import joint_positions
-from cf_robot.protocol import ProtocolError, validate_action
+from cf_robot.protocol import GRIPPER_JOINTS, JOINTS, ProtocolError, validate_action
 
 LOG = logging.getLogger(__name__)
 MAX_STEP_DEG = 5.0
@@ -16,8 +15,9 @@ OBSERVATION_INTERVAL_S = 0.1
 class FollowerSession:
     """One hardware-owning thread; the network loop only replaces its latest target."""
 
-    def __init__(self, factory, max_step=MAX_STEP_DEG, watchdog=WATCHDOG_S):
+    def __init__(self, factory, max_step=MAX_STEP_DEG, watchdog=WATCHDOG_S, joints=JOINTS):
         self.factory = factory
+        self.joints = joints
         self.max_step = max_step
         self.watchdog = watchdog
         self.ready = threading.Event()
@@ -40,6 +40,7 @@ class FollowerSession:
         return self.ready.wait(timeout) and self.state == "ready"
 
     def submit(self, action):
+        action = validate_action(action, self.joints)
         with self.lock:
             if self.state != "ready":
                 raise ProtocolError(self.error or "follower is not ready")
@@ -61,7 +62,7 @@ class FollowerSession:
             robot = self.factory()
             # Calibration is performed explicitly before running the service.
             robot.connect(calibrate=False)
-            previous = validate_action(joint_positions(robot.get_observation()))
+            previous = self._observation(robot)
             self.initial_observation = dict(previous)
             self.observation = dict(previous)
             self.observed_at = time.time()
@@ -101,7 +102,8 @@ class FollowerSession:
                             for name, delta in jumps.items()
                         )
                         raise ProtocolError(
-                            f"joint jump exceeds {self.max_step:g}-degree limit:\n"
+                            f"joint jump exceeds {self.max_step:g}-"
+                            f"{'percent' if self.joints == GRIPPER_JOINTS else 'degree'} limit:\n"
                             f"{details}\n"
                             f"{next_step}"
                         )
@@ -110,7 +112,7 @@ class FollowerSession:
                     armed = True
                 if time.monotonic() - last_observation >= OBSERVATION_INTERVAL_S:
                     # Keep servo readback in the sole hardware-owner thread.
-                    observed = validate_action(joint_positions(robot.get_observation()))
+                    observed = self._observation(robot)
                     with self.lock:
                         self.observation = observed
                         self.observed_at = time.time()
@@ -134,3 +136,7 @@ class FollowerSession:
                 if self.state != "error":
                     self.state = "stopped"
             self.ready.set()
+
+    def _observation(self, robot):
+        observed = robot.get_observation()
+        return validate_action({name: observed[name] for name in self.joints}, self.joints)

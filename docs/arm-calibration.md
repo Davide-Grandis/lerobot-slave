@@ -234,3 +234,61 @@ write robot settings; the separately confirmed J6 RESTORE operation does.
 For terminal-based setting, use `lerobot-calibrate --teleop.type=so101_leader`
 with the actual leader port/ID, or `cf-robot-follower-calibrate` for the Pi.
 Stop monitoring first. The same physical-support requirements apply.
+
+## J6-Only Live Following Test
+
+Normal teleoperation sends all six targets. Moving only the leader gripper does
+not isolate it: the other five follower joints can still move toward their
+leader targets. Use the dedicated CLI mode instead, after updating both Mac and
+Pi packages and restarting the Pi service:
+
+```sh
+.venv/bin/cf-robot-leader \
+  --url "$CF_ROBOT_CONTROL_URL" \
+  --port /dev/tty.usbmodemYOUR_LEADER_DEVICE \
+  --arm-id so101_leader \
+  --J6-only
+```
+
+Use the actual leader serial port and source `controller.env` first. No hosted
+UI deployment is needed for this CLI mode. The regular browser teleoperation
+button is not a gripper-only control.
+
+1. Secure both arms in stable poses and keep the physical emergency stop
+   accessible. Keep fingers/objects clear of both grippers and maintain a direct
+   or live camera view of the follower. Nothing should be held by the gripper:
+   stopping releases it.
+2. With torque OFF, align both grippers to the same reported opening percentage,
+   preferably an interior value around 40-60%. Use Arms Monitor if needed, then
+   stop that monitor so the CLI can own the ports. On the follower, `J6 TD`
+   explicitly disables J6 only. Do not release the other joints.
+3. Start the command. It verifies J6's saved/live calibration on both arms,
+   checks torque is already OFF, reports the initial percentages and waits for
+   `GRIPPER`. Align within 1 percentage point before confirming. No startup
+   movement or automatic synchronization is performed.
+4. After confirmation, move only the leader gripper slowly through a small
+   interior interval initially. The terminal prints leader/follower percent
+   and delta at about 4 Hz. Check direction, settling and relative travel.
+5. Stop with Ctrl-C. Follower J6 torque is disabled and its previous speed setting
+   restored. Inspect before restarting; there is no automatic reconnect.
+
+The Pi's authenticated `/control/gripper` route shares the normal control and
+maintenance interlocks, but accepts only `gripper.pos`, strictly in 0-100%.
+The CLI requires explicit J6-only acknowledgement; it never falls back to the
+normal `/control` route on an older Pi. Both drivers use direct bus access and
+avoid LeRobot's whole-arm configure/torque/disconnect methods.
+
+Only J6 Goal_Position, Goal_Velocity and Torque_Enable may be written in this
+mode. The first target seeds J6's goal from its current encoder position before
+enabling its torque. Speed is capped at the monitor's reduced speed (or an
+existing lower nonzero speed). J1-J5 calibration, goals and torque are untouched;
+their remaining mismatches do not prevent the isolated test and are not
+considered validated by it.
+
+The 500 ms command watchdog, sequence/timestamp validation and 5-percentage-point
+per-target guard remain active. An additional measured tracking-error limit of
+5 percentage points stops the test if the leader moves too fast or the gripper
+lags/obstructs. Missing/stale follower readback also stops the CLI. These checks
+are not a force limiter or a certified emergency stop. Stop immediately at
+unexpected resistance or movement. Full-arm teleoperation must remain stopped
+until J1-J5 are repaired and physically validated separately.

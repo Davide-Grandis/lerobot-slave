@@ -32,6 +32,7 @@ the Pi.
 | [`src/cf_robot/leader.py`](../src/cf_robot/leader.py) | Connect the laptop leader without interactive calibration; send actions at a configured maximum rate (default 30 fps); stop rather than auto-reconnect after failure. |
 | [`src/cf_robot/follower.py`](../src/cf_robot/follower.py) | Serve `/health`, `/control`, `/video`, `/update`, `/calibrate`, `/maintenance`, and `/monitor`; authenticate WebSocket upgrades; allow one control and one video connection. |
 | [`src/cf_robot/control.py`](../src/cf_robot/control.py) | Own the follower in one thread; retain only the latest target; refresh measured servo positions; check command gap and joint jumps; disconnect on stop/error. |
+| [`src/cf_robot/gripper_control.py`](../src/cf_robot/gripper_control.py) | Isolate J6 through direct-bus adapters, without whole-arm configuration or J1-J5 goal/torque writes; check J6 calibration/alignment and release only J6 on stop. |
 | [`src/cf_robot/protocol.py`](../src/cf_robot/protocol.py) | Define protocol version 1, joint names, action validation, sequence and timestamp checks. |
 | [`src/cf_robot/auth.py`](../src/cf_robot/auth.py) | Validate the remote URL and attach Access and origin-key headers from the laptop environment. |
 | [`src/cf_robot/operator_session.py`](../src/cf_robot/operator_session.py) | Own one remote control socket; route either manual jog targets or leader samples, never both; refresh the manual target to satisfy the follower watchdog. |
@@ -44,6 +45,14 @@ the Pi.
 | [`deploy/`](../deploy/) | Example Pi environment, follower service, and the root-owned WSS update watcher/service. |
 
 ## Control and video protocol
+
+The CLI's `--J6-only` mode uses authenticated `WS /control/gripper`,
+sharing the normal control/maintenance lock. Its ready message explicitly
+acknowledges `mode=gripper-only` and `joints=["gripper.pos"]`; every action and
+observation contains only that joint. Other-joint frames are rejected rather
+than padded with fixed targets. The existing `/control` route still requires
+all six joints. Gripper-only startup is read-only until the first aligned target;
+there is no full-arm SDK connect/configure or startup sync.
 
 The Pose Monitor supports independent local leader or remote follower sessions,
 as well as comparison. Calibration maintenance, monitoring and teleoperation are

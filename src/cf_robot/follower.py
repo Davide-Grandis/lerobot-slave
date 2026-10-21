@@ -19,8 +19,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import uvicorn
 
 from cf_robot.control import FollowerSession
+from cf_robot.gripper_control import GripperFollower
 from cf_robot.hardware import make_camera, make_follower
-from cf_robot.protocol import VERSION, validate_command
+from cf_robot.protocol import GRIPPER_JOINTS, JOINTS, VERSION, validate_command
 from cf_robot.pose_monitor import stream_follower_pose, validate_pose_command
 from cf_robot.servo_maintenance import (
     calculate_home_positions,
@@ -90,6 +91,13 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
 
     @app.websocket("/control")
     async def control(ws: WebSocket):
+        await control_session(ws, gripper_only=False)
+
+    @app.websocket("/control/gripper")
+    async def gripper_control(ws: WebSocket):
+        await control_session(ws, gripper_only=True)
+
+    async def control_session(ws, gripper_only):
         if not hmac.compare_digest(ws.headers.get("x-cf-robot-key", ""), origin_key):
             await ws.close(code=1008)
             return
@@ -104,7 +112,11 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             await ws.close(code=1008, reason="another operator is connected")
             return
         async with control_lock:
-            session = FollowerSession(follower_factory)
+            joints = GRIPPER_JOINTS if gripper_only else JOINTS
+            session_factory = (
+                (lambda: GripperFollower(follower_factory())) if gripper_only else follower_factory
+            )
+            session = FollowerSession(session_factory, joints=joints)
             session.start()
             try:
                 if not await asyncio.to_thread(session.wait_ready):
@@ -115,6 +127,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                         "type": "ready",
                         "version": VERSION,
                         "observation": session.initial_observation,
+                        **({"mode": "gripper-only", "joints": list(joints)} if gripper_only else {}),
                     }
                 )
                 last_seq = 0
@@ -129,7 +142,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                         raw = None
                     if raw is not None:
                         try:
-                            seq, action = validate_command(json.loads(raw), last_seq)
+                            seq, action = validate_command(json.loads(raw), last_seq, joints=joints)
                             session.submit(action)
                             last_seq = seq
                         except (ValueError, TypeError) as exc:
