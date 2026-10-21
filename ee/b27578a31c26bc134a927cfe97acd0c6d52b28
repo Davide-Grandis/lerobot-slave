@@ -1,0 +1,27 @@
+docs/teleoperation.md
+  s_e0296a8a153f47::t_17ec9e6a4ef11f 1-108
+src/cf_robot/pairing.py
+  s_e0296a8a153f47::t_f5822f583edb6a 1-46
+src/cf_robot/teleop_motion.py
+  s_e0296a8a153f47::t_f2bdea0941551f 1-63
+src/cf_robot/web.py
+  s_e0296a8a153f47::t_29144e9ae9b1d1 22,56,395,476
+tests/test_teleop_shared.py
+  s_e0296a8a153f47::t_d895af226836be 1-334
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "eeb27578a31c26bc134a927cfe97acd0c6d52b28",
+  "prompts": {},
+  "sessions": {
+    "s_e0296a8a153f47": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "sandy-freighter",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
