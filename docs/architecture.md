@@ -67,6 +67,9 @@ J1-J5 isolated tests use `WS /control/joint/{id}` and ready metadata
 `mode=joint-only` with exactly the selected position key. These share the same
 hardware owner, interlocks, feedback holds and motion policy. They hold the
 selected axis on stop rather than releasing a gravity-loaded wrist/arm.
+`WS /control/joints/5-6` is the fixed paired route for `--J5-J6-only`, with
+`mode=joint-only` and exactly `["wrist_roll.pos","gripper.pos"]`. Its shared
+adapter releases J6 and holds J5 on stop; J1-J4 remain untouched.
 The monitor's `angular_preview` / `angular_apply` commands program selected
 J1-J5 MIN/MAX EEPROM and matching angular/SDK files, with explicit hardware-write
 intent, a one-use nonce, readback and backups. Homing, torque, goal registers and

@@ -1,4 +1,4 @@
-"""Isolated J6 adapters: never configure or command the other five joints."""
+"""Isolated control URLs and compatibility adapters for J6."""
 
 from time import monotonic
 from urllib.parse import urlsplit, urlunsplit
@@ -14,10 +14,18 @@ def gripper_control_url(url):
 def joint_control_url(url, joint_id):
     if type(joint_id) is not int or not 1 <= joint_id <= 6:
         raise ValueError("joint-only mode requires J1-J6")
+    path = "/control/gripper" if joint_id == 6 else f"/control/joint/{joint_id}"
+    return _control_url(url, path, f"--J{joint_id}-only")
+
+
+def wrist_gripper_control_url(url):
+    return _control_url(url, "/control/joints/5-6", "--J5-J6-only")
+
+
+def _control_url(url, path, flag):
     parsed = urlsplit(url)
     if parsed.path not in ("", "/", "/control"):
-        raise ValueError(f"pass the normal /control URL with --J{joint_id}-only")
-    path = "/control/gripper" if joint_id == 6 else f"/control/joint/{joint_id}"
+        raise ValueError(f"pass the normal /control URL with {flag}")
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 

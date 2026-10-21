@@ -1,7 +1,7 @@
 """Calibrated direct-bus teleoperation for full-arm and joint-isolated sessions."""
 
 from cf_robot.calibration_inspection import inspect_calibration
-from cf_robot.protocol import GRIPPER_JOINTS, JOINTS, validate_action
+from cf_robot.protocol import GRIPPER_JOINTS, JOINTS, WRIST_GRIPPER_JOINTS, validate_action
 from cf_robot.servo_maintenance import HOME_SPEED, read_servo_limits
 from cf_robot.teleop_motion import BoundedMotion, joint_label
 
@@ -45,8 +45,11 @@ class TeleopLeader:
                 self.unit_limits[joint] = sorted(item["converted_range"])
         if warnings:
             raise ValueError("selected-joint calibration must be consistent: " + "; ".join(warnings))
-        if self.side == "leader" or self.joints == GRIPPER_JOINTS:
-            for joint in self.joints:
+        torque_off_joints = self.joints if self.side == "leader" else (
+            GRIPPER_JOINTS if self.joints in (GRIPPER_JOINTS, WRIST_GRIPPER_JOINTS) else ()
+        )
+        if torque_off_joints:
+            for joint in torque_off_joints:
                 if self.bus.read(
                     "Torque_Enable", joint.removesuffix(".pos"), normalize=False, num_retry=2,
                 ):
@@ -99,6 +102,7 @@ class TeleopFollower(TeleopLeader):
         self.previous_speeds = {}
         self.speeds = {}
         self.motion = BoundedMotion(joints, clock)
+        self.release_gripper = joints in (GRIPPER_JOINTS, WRIST_GRIPPER_JOINTS)
 
     def get_observation(self):
         return self.get_action()
@@ -136,10 +140,10 @@ class TeleopFollower(TeleopLeader):
                 if not 0 <= speed <= 1023:
                     raise ValueError(f"{joint_label(joint)} has an unexpected speed register")
                 self.previous_speeds[name] = speed
-            if self.joints == GRIPPER_JOINTS and self.bus.read(
+            if self.release_gripper and self.bus.read(
                 "Torque_Enable", "gripper", normalize=False, num_retry=2,
             ):
-                raise ValueError(f"{joint_label(self.joints[0])} torque changed before arming")
+                raise ValueError("J6 torque changed before arming")
             self.changed = True
             # Seed every selected goal before enabling any selected motor.
             for joint in self.joints:
@@ -161,16 +165,17 @@ class TeleopFollower(TeleopLeader):
         safe_speed_restore = set()
         try:
             if self.is_connected and self.changed:
-                if self.joints == GRIPPER_JOINTS:
-                    try:
-                        self.bus.write("Torque_Enable", "gripper", 0, normalize=False, num_retry=2)
-                        safe_speed_restore.add("gripper")
-                    except Exception as exc:  # noqa: BLE001 - attempt remaining cleanup.
-                        errors.append(str(exc))
-                else:
-                    # A full arm may be supporting a load: hold, do not drop it.
-                    for joint in self.joints:
-                        name = joint.removesuffix(".pos")
+                # Release isolated J6 before a potentially slow supporting-axis read.
+                for joint in (tuple(reversed(self.joints)) if self.release_gripper else self.joints):
+                    name = joint.removesuffix(".pos")
+                    if joint == "gripper.pos" and self.release_gripper:
+                        try:
+                            self.bus.write("Torque_Enable", name, 0, normalize=False, num_retry=2)
+                            safe_speed_restore.add(name)
+                        except Exception as exc:  # noqa: BLE001 - attempt remaining cleanup.
+                            errors.append(str(exc))
+                    else:
+                        # Supporting axes hold, including a full-arm gripper.
                         try:
                             raw = int(self.bus.read("Present_Position", name, normalize=False, num_retry=2))
                             limits = self.raw_limits[joint]

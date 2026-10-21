@@ -10,9 +10,9 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
 from cf_robot.auth import access_headers
-from cf_robot.gripper_control import GripperLeader, joint_control_url
+from cf_robot.gripper_control import GripperLeader, joint_control_url, wrist_gripper_control_url
 from cf_robot.hardware import make_leader
-from cf_robot.protocol import HOLD_CAPABILITY, JOINTS, VERSION, action_message, validate_action
+from cf_robot.protocol import HOLD_CAPABILITY, JOINTS, VERSION, WRIST_GRIPPER_JOINTS, action_message, validate_action
 from cf_robot.teleop_hardware import TeleopLeader
 from cf_robot.teleop_motion import joint_label
 from cf_robot.teleop_runtime import Feedback, recover_live_feedback, synchronize
@@ -42,20 +42,27 @@ async def run_teleop(
     sync_at_start=False,
     gripper_only=False,
     joint_only=None,
+    wrist_gripper_only=False,
 ):
     if not 1 <= fps <= 60:
         raise ValueError("fps must be between 1 and 60")
     stop = stop if stop is not None else asyncio.Event()
     on_status = on_status or (lambda message: None)
     leader_factory = leader_factory or (lambda: make_leader(port, arm_id))
-    if gripper_only and joint_only is not None:
+    if sum((bool(gripper_only), joint_only is not None, bool(wrist_gripper_only))) > 1:
         raise ValueError("select only one joint-only mode")
     selected_id = 6 if gripper_only else joint_only
     if selected_id is not None and (type(selected_id) is not int or not 1 <= selected_id <= 6):
         raise ValueError("joint-only mode requires J1-J6")
     gripper_only = selected_id == 6
-    joints = (JOINTS[selected_id - 1],) if selected_id is not None else JOINTS
-    if selected_id is not None:
+    joints = WRIST_GRIPPER_JOINTS if wrist_gripper_only else (
+        (JOINTS[selected_id - 1],) if selected_id is not None else JOINTS
+    )
+    isolated = selected_id is not None or wrist_gripper_only
+    isolation_label = "J5-J6" if wrist_gripper_only else f"J{selected_id}"
+    if wrist_gripper_only:
+        url = wrist_gripper_control_url(url)
+    elif selected_id is not None:
         url = joint_control_url(url, selected_id)
     headers = access_headers(url)
     leader = None
@@ -65,11 +72,11 @@ async def run_teleop(
         first = json.loads(await asyncio.wait_for(socket.recv(), timeout=25))
         if first.get("type") != "ready" or first.get("version") != VERSION:
             raise RuntimeError(first.get("message", "follower did not become ready"))
-        if selected_id is not None and (
+        if isolated and (
             first.get("mode") != ("gripper-only" if gripper_only else "joint-only")
             or first.get("joints") != list(joints)
         ):
-            raise RuntimeError(f"Pi did not confirm J{selected_id}-only isolation; refusing to send any targets")
+            raise RuntimeError(f"Pi did not confirm {isolation_label}-only isolation; refusing to send any targets")
         supports_hold = HOLD_CAPABILITY in first.get("capabilities", [])
         try:
             follower_pose = validate_action(first["observation"], joints)
@@ -114,7 +121,10 @@ async def run_teleop(
                     f"follower={follower_pose[joint]:.2f} deg. Other joints are untouched."
                 )
             else:
-                print("Full-arm teleoperation: J1-J5 degrees; J6 percent.")
+                print(
+                    "J5-J6 ONLY: wrist roll in degrees; gripper in percent. J1-J4 remain untouched."
+                    if wrist_gripper_only else "Full-arm teleoperation: J1-J5 degrees; J6 percent."
+                )
                 for joint in joints:
                     print(
                         f"  {joint_label(joint)} leader={initial[joint]:.2f}, "
@@ -128,6 +138,7 @@ async def run_teleop(
                     if sync_at_start else "Manually align selected joints within 1 unit. "
                 )
                 + (
+                    "J5 will hold position; J6 will be released on stop. " if wrist_gripper_only else
                     "J6 will be released on stop. " if gripper_only
                     else "Selected follower joints will hold position on stop; keep physical support available. "
                 )
@@ -226,6 +237,10 @@ def main():
         "--J6-only", dest="gripper_only", action="store_true",
         help="isolated J6 test; never send goals or torque changes to J1-J5",
     )
+    selected.add_argument(
+        "--J5-J6-only", dest="wrist_gripper_only", action="store_true",
+        help="isolated wrist-roll and gripper control; never change J1-J4 goals or torque",
+    )
     parser.add_argument(
         "--no-startup-sync",
         action="store_true",
@@ -234,6 +249,9 @@ def main():
     args = parser.parse_args()
     last_printed_state = None
     waiting_for_sync = False
+    selected_label = "J5-J6" if args.wrist_gripper_only else (
+        f"J{6 if args.gripper_only else args.joint_only}" if args.gripper_only or args.joint_only else None
+    )
 
     def report_status(message):
         nonlocal last_printed_state, waiting_for_sync
@@ -242,13 +260,13 @@ def main():
             isinstance(state, str) and state.startswith("synchronizing ")
         ):
             waiting_for_sync = True
-            selected = f"J{6 if args.gripper_only else args.joint_only}" if args.gripper_only or args.joint_only else (
+            selected = selected_label or (
                 state.removeprefix("synchronizing ") if state.startswith("synchronizing ") else "selected joints"
             )
             state = f"WAIT - syncing {selected}; hold the leader still."
         elif state in ("waiting for J6 feedback", "waiting for follower feedback"):
             waiting_for_sync = True
-            selected = f"J{6 if args.gripper_only else args.joint_only}" if args.gripper_only or args.joint_only else "selected-joint"
+            selected = selected_label or "selected-joint"
             state = f"WAIT - feedback delayed; holding the last {selected} sync goal."
         elif state == "waiting for live feedback":
             waiting_for_sync = True
@@ -292,6 +310,7 @@ def main():
                 sync_at_start=not args.no_startup_sync,
                 gripper_only=args.gripper_only,
                 joint_only=args.joint_only,
+                wrist_gripper_only=args.wrist_gripper_only,
             )
         )
     except KeyboardInterrupt:

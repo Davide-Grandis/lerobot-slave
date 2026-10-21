@@ -13,6 +13,7 @@ JOINTS = (
     "gripper.pos",
 )
 GRIPPER_JOINTS = ("gripper.pos",)
+WRIST_GRIPPER_JOINTS = ("wrist_roll.pos", "gripper.pos")
 MAX_AGE_S = 0.5
 MAX_FUTURE_S = 0.25
 HOLD_CAPABILITY = "hold-current-position"
@@ -28,6 +29,8 @@ def validate_action(action, joints=JOINTS):
             raise ProtocolError("gripper-only action must contain only gripper.pos")
         if len(joints) == 1:
             raise ProtocolError(f"joint-only action must contain only {joints[0]}")
+        if joints != JOINTS:
+            raise ProtocolError("selected-joint action must contain exactly: " + ", ".join(joints))
         raise ProtocolError("action must contain exactly the six SO-ARM101 joints")
     cleaned = {}
     for name in joints:

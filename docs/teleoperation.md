@@ -4,6 +4,11 @@ Normal CLI, browser leader mode and joint-only calibration tests use the same
 feedback, startup-sync and bounded-following implementations. A joint-only mode
 selects fewer joints; it is not a separate motion algorithm.
 
+`--J5-J6-only` selects exactly wrist roll and gripper, leaving J1-J4 goals and
+torque untouched. J5 uses degrees and J6 uses percent. The client requires
+explicit two-joint acknowledgement from `/control/joints/5-6`; it never falls
+back to full-arm control. Both packages must include this endpoint before use.
+
 | Layer | Shared implementation |
 | --- | --- |
 | Feedback validation, sample generations and diagnostics | `teleop_runtime.Feedback` |
@@ -21,6 +26,8 @@ Leader torque must already be OFF; physically support it before releasing torque
 through an appropriate maintenance procedure. The full follower may retain its
 existing torque state during read-only connection. J6-only testing requires J6
 torque OFF on both arms.
+The paired J5-J6 test likewise requires leader J5/J6 and follower J6 torque OFF.
+Follower J5 may already be powered holding its wrist position.
 
 The CLI shows current poses and asks **Press Enter to continue**. Browser users
 connect the leader, select **Leader arm** and explicitly confirm the movement
@@ -121,6 +128,9 @@ The isolated J6 test deliberately releases only J6 on stop, preserving its
 documented empty-gripper test behavior. `--J1-only` through `--J5-only` hold only
 their selected supporting axis on stop. No stop operation enables additional
 motors or automatically starts another session.
+In `--J5-J6-only`, J6 is released first and J5 is held. Use an empty gripper:
+anything held by J6 may drop on stop. Full-arm mode retains
+its existing hold behaviour, including its gripper.
 
 Update both Mac and Pi packages and restart their processes. Publish updated
 static assets for the browser confirmation and WAIT/Ready messages.

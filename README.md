@@ -674,9 +674,12 @@ to move the follower to the leader's initial pose if needed.
 For an isolated gripper calibration test, add `--J6-only` to that command.
 For wrist-roll testing, use `--J5-only` after installing the
 [follower's independent J5 references](docs/angular-calibration.md#follower-j5-and-isolated-testing).
+Use `--J5-J6-only` to operate the calibrated wrist roll and gripper together,
+without touching J1-J4. It retains WAIT/sync/Ready startup; on stop J5 holds and
+J6 releases. Both Mac and Pi need the updated paired-joint endpoint.
 `--J1-only` through `--J5-only` select their respective axes using the same shared
 controller; they do not move or change torque on other axes.
-This uses a separate J6-only control route; normal teleoperation still sends
+The isolated gripper uses a separate J6-only control route; normal teleoperation still sends
 all six joints even if you move only the leader gripper. See
 [the J6-only live test procedure](docs/arm-calibration.md#j6-only-live-following-test).
 The isolated mode requires consistent J6 calibration and both grippers' torque

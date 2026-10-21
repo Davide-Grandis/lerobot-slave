@@ -224,6 +224,15 @@ selected joint must remain torque OFF for manual operation. File installation
 still requires follower J5 torque OFF and physical support.
 J6-only still releases its gripper as before.
 
+To test both calibrated axes together, replace the single-joint flag with
+`--J5-J6-only`. This uses the dedicated `/control/joints/5-6` endpoint and
+requires updated Mac and Pi packages. After Enter, WAIT remains active while
+both axes synchronise sequentially to a fixed leader snapshot. Ready appears
+only when both have settled on fresh measured feedback. Live following then
+streams J5 and J6 together; J1-J4 are never commanded or torque-changed.
+On stop J6 releases and J5 holds, so keep the gripper empty. Existing calibration
+files and EEPROM values need no changes for this combined mode.
+
 `--J1-only` through `--J5-only` use the same selected-joint implementation and
 hold the selected supporting axis on stop. Each requires its own valid
 calibration before use. Flags are mutually exclusive. The angular preview

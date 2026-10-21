@@ -21,7 +21,7 @@ import uvicorn
 from cf_robot.control import FollowerSession
 from cf_robot.gripper_control import GripperFollower
 from cf_robot.hardware import make_camera, make_follower
-from cf_robot.protocol import HOLD_CAPABILITY, JOINTS, VERSION, validate_command
+from cf_robot.protocol import HOLD_CAPABILITY, JOINTS, VERSION, WRIST_GRIPPER_JOINTS, validate_command
 from cf_robot.pose_monitor import stream_follower_pose, validate_pose_command
 from cf_robot.servo_maintenance import (
     calculate_home_positions,
@@ -106,7 +106,11 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             return
         await control_session(ws, joint_only=joint_id)
 
-    async def control_session(ws, joint_only=None):
+    @app.websocket("/control/joints/5-6")
+    async def wrist_gripper_control(ws: WebSocket):
+        await control_session(ws, wrist_gripper_only=True)
+
+    async def control_session(ws, joint_only=None, wrist_gripper_only=False):
         if not hmac.compare_digest(ws.headers.get("x-cf-robot-key", ""), origin_key):
             await ws.close(code=1008)
             return
@@ -121,11 +125,15 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             await ws.close(code=1008, reason="another operator is connected")
             return
         async with control_lock:
-            joints = (JOINTS[joint_only - 1],) if joint_only is not None else JOINTS
+            joints = WRIST_GRIPPER_JOINTS if wrist_gripper_only else (
+                (JOINTS[joint_only - 1],) if joint_only is not None else JOINTS
+            )
+            isolated = joint_only is not None or wrist_gripper_only
+
             def session_factory():
                 if joint_only == 6:
                     return GripperFollower(follower_factory())
-                if joint_only is not None:
+                if isolated:
                     return TeleopFollower(follower_factory(), joints)
                 return control_factory()
             session = FollowerSession(session_factory, joints=joints)
@@ -144,7 +152,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                         **({
                             "mode": "gripper-only" if joint_only == 6 else "joint-only",
                             "joints": list(joints),
-                        } if joint_only is not None else {}),
+                        } if isolated else {}),
                     }
                 )
                 last_seq = 0
