@@ -1,0 +1,21 @@
+src/cf_robot/operator/app.css
+  s_e0296a8a153f47::t_9d08247c49695c 137
+src/cf_robot/teleop_runtime.py
+  s_e0296a8a153f47::t_0fdc1a32a4e6fa 9,14-15,19,69,79-115
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f35c5c277bc9d8ddfc92d4f4aad4462763780b21",
+  "prompts": {},
+  "sessions": {
+    "s_e0296a8a153f47": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "sandy-freighter",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
