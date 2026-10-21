@@ -133,6 +133,22 @@ headings and a unit note below the sample timestamps. Separators bracket the
 header, readings and timestamps.
 
 `INSPECT L` / `INSPECT F` shows the selected arm's full inspection record.
+The latest explicitly inspected record for each arm is printed again after
+`q` or Ctrl-C restores the terminal, so it stays available for copying even
+if subsequent live redraws or commands replaced it.
+
+To save a snapshot directly from the monitor:
+
+```text
+SAVE F ~/Desktop/follower-inspection.json
+SAVE L "~/Desktop/leader inspection.json"
+```
+
+SAVE exports the selected arm's current calibration inspection as JSON and
+also retains it for printing on exit. Parent directories must already exist;
+existing files are never overwritten. Use another filename for a new export.
+Neither INSPECT nor SAVE sends robot commands or changes calibration.
+
 `CAPTURE L J1 0 2 measured-reference` checks the local shoulder-pan reading
 against an independently measured zero, with a 2-degree tolerance; use `F` for
 the follower. Issuing CAPTURE confirms the physical measurement. CLI captures

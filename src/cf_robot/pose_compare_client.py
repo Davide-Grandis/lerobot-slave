@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import sys
 import termios
@@ -74,6 +75,15 @@ def parse_pose_command(line, command_id):
     match = re.fullmatch(r"INSPECT\s+([LF])", text, re.IGNORECASE)
     if match:
         return {"kind": "inspect", "side": "leader" if match[1].upper() == "L" else "follower"}
+    if text.upper().startswith("SAVE "):
+        parts = shlex.split(text)
+        if len(parts) != 3 or parts[1].upper() not in ("L", "F"):
+            raise ValueError("use SAVE L/F <path>; quote paths containing spaces")
+        return {
+            "kind": "save_inspection",
+            "side": "leader" if parts[1].upper() == "L" else "follower",
+            "path": parts[2],
+        }
     match = re.fullmatch(
         r"CAPTURE\s+([LF])\s+J([1-6])\s+([+-]?[\d.]+)\s+([\d.]+)\s+(.+)",
         text, re.IGNORECASE,
@@ -151,8 +161,45 @@ def parse_pose_command(line, command_id):
         }
 
     raise ValueError(
-        "use J1-J6 T<ticks>, J1-J5 D<degrees>, J6 %<0-100>, or J1-J6/J* TE/TD"
+        "use INSPECT L/F, SAVE L/F <path>, J1-J6 T<ticks>, J1-J5 D<degrees>, "
+        "J6 %<0-100>, or J1-J6/J* TE/TD"
     )
+
+
+class InspectionReports:
+    """Retain explicit inspection snapshots independently of live screen redraws."""
+
+    def __init__(self):
+        self.reports = {}
+
+    def command(self, command, samples):
+        side = command["side"]
+        report = (samples.get(side) or {}).get("calibration")
+        if not report:
+            return f"{side.capitalize()} inspection unavailable; start monitoring that arm."
+        content = json.dumps(report, indent=2)
+        self.reports[side] = content
+        if command["kind"] == "save_inspection":
+            path = Path(command["path"]).expanduser()
+            try:
+                # Exclusive creation protects previous exports from accidental overwrite.
+                with path.open("x", encoding="utf-8") as output:
+                    output.write(content + "\n")
+            except OSError as exc:
+                return f"Could not save inspection: {exc}"
+            return f"Saved {side} inspection to {path.resolve()}"
+        return content
+
+    def print_on_exit(self):
+        if not self.reports:
+            return
+        print("\n" + "=" * 72)
+        print("INSPECTION REPORTS -- retained after monitor exit; safe to copy")
+        for side, content in self.reports.items():
+            print(f"\n{side.upper()} INSPECTION")
+            print(content)
+        print("=" * 72)
+        sys.stdout.flush()
 
 
 class TerminalInput:
@@ -319,7 +366,8 @@ def _render(build_version, leader_sample, follower_sample, command_buffer="", st
     print("Follower: J1-J6 T<ticks>; J1-J5 D<degrees>; J6 %<0-100>")
     print("          J1-J6 or J* TE/TD (TD may sag); help; q")
     print("TE holds present position; TD releases torque and may drop the joint.")
-    print("INSPECT L/F; CAPTURE L/F J<n> <known value> <tolerance> <pose label>")
+    print("INSPECT L/F (reprinted on exit); SAVE L/F <path> (JSON, no overwrite)")
+    print("CAPTURE L/F J<n> <known value> <tolerance> <pose label>")
     print("CAPTURE confirms an independently measured physical pose; it never moves an arm.")
     if status_message:
         print(status_message)
@@ -332,6 +380,7 @@ async def monitor_poses(url, port, arm_id, build_version):
     stop = threading.Event()
     samples = asyncio.Queue(maxsize=4)
     leader_thread = None
+    inspections = InspectionReports()
 
     async with connect(
         url,
@@ -466,9 +515,10 @@ async def monitor_poses(url, port, arm_id, build_version):
                                 stop_sent = True
                                 stop.set()
                                 status_message = "Stopping monitor..."
-                            elif parsed["kind"] == "inspect":
-                                sample = leader_sample if parsed["side"] == "leader" else follower_sample
-                                status_message = json.dumps((sample or {}).get("calibration"), indent=2)
+                            elif parsed["kind"] in ("inspect", "save_inspection"):
+                                status_message = inspections.command(
+                                    parsed, {"leader": leader_sample, "follower": follower_sample},
+                                )
                             elif parsed["kind"] == "capture":
                                 try:
                                     evidence = capture_validation(
@@ -526,6 +576,7 @@ async def monitor_poses(url, port, arm_id, build_version):
             if leader_thread is not None:
                 await asyncio.to_thread(leader_thread.join)
             terminal.close()
+            inspections.print_on_exit()
 
 
 async def monitor_leader_only(port, arm_id, build_version):
@@ -547,6 +598,7 @@ async def monitor_leader_only(port, arm_id, build_version):
         "stop": asyncio.create_task(terminal.stop_requested.wait()),
     }
     sample, status = None, "Leader-only: read-only. No follower connection."
+    inspections = InspectionReports()
     try:
         while True:
             done, _ = await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_COMPLETED)
@@ -562,8 +614,8 @@ async def monitor_leader_only(port, arm_id, build_version):
                     command = parse_pose_command(tasks["command"].result(), 1)
                     if command["kind"] == "stop":
                         return
-                    if command["kind"] == "inspect":
-                        status = json.dumps((sample or {}).get("calibration"), indent=2) if command["side"] == "leader" else "Follower not connected in leader-only mode."
+                    if command["kind"] in ("inspect", "save_inspection"):
+                        status = inspections.command(command, {"leader": sample})
                     elif command["kind"] == "capture":
                         status = json.dumps(capture_validation({"leader": sample}, command["body"]), indent=2)
                     else:
@@ -586,6 +638,7 @@ async def monitor_leader_only(port, arm_id, build_version):
         # Do not return serial ownership while the hardware thread is still alive.
         await asyncio.to_thread(thread.join)
         terminal.close()
+        inspections.print_on_exit()
 
 
 def main():
