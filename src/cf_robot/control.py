@@ -10,6 +10,7 @@ LOG = logging.getLogger(__name__)
 MAX_STEP_DEG = 5.0
 WATCHDOG_S = 0.5
 OBSERVATION_INTERVAL_S = 0.1
+HOLD_TARGET = object()
 
 
 class FollowerSession:
@@ -45,6 +46,14 @@ class FollowerSession:
             if self.state != "ready":
                 raise ProtocolError(self.error or "follower is not ready")
             self.target = action
+            self.received_at = time.monotonic()
+            self.wakeup.set()
+
+    def submit_hold(self):
+        with self.lock:
+            if self.state != "ready":
+                raise ProtocolError(self.error or "follower is not ready")
+            self.target = HOLD_TARGET
             self.received_at = time.monotonic()
             self.wakeup.set()
 
@@ -84,6 +93,19 @@ class FollowerSession:
                 if target is not None:
                     if time.monotonic() - received_at > self.watchdog:
                         raise ProtocolError("queued command expired")
+                    if target is HOLD_TARGET:
+                        if armed and hasattr(robot, "hold_position"):
+                            current = validate_action(robot.hold_position(), self.joints)
+                        else:
+                            current = self._observation(robot)
+                            if armed:
+                                robot.send_action(current)
+                        previous = current
+                        with self.lock:
+                            self.observation = dict(current)
+                            self.observed_at = time.time()
+                        last_observation = time.monotonic()
+                        continue
                     jumps = {
                         name: target[name] - previous[name]
                         for name in previous

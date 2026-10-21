@@ -13,6 +13,7 @@ class TeleopLeader:
         self.joints = joints
         self.is_connected = False
         self.saved_records = {}
+        self.raw_limits = {}
         self.unit_limits = {}
         self.side = "leader"
 
@@ -34,6 +35,12 @@ class TeleopLeader:
             item = report["joints"][joint]
             warnings.extend(f"{joint_label(joint)}: {warning}" for warning in item["warnings"])
             self.saved_records[joint] = item["saved"]
+            if item.get("working_range"):
+                self.raw_limits[joint] = item["working_range"]
+            elif item["saved"]:
+                self.raw_limits[joint] = {
+                    "min": item["saved"]["range_min"], "max": item["saved"]["range_max"],
+                }
             if item.get("converted_range") is not None:
                 self.unit_limits[joint] = sorted(item["converted_range"])
         if warnings:
@@ -47,15 +54,16 @@ class TeleopLeader:
         self.get_action()
 
     def raw_positions(self):
-        if self.joints == GRIPPER_JOINTS:
-            raw = {"gripper": self.bus.read("Present_Position", "gripper", normalize=False, num_retry=2)}
+        if len(self.joints) == 1:
+            name = self.joints[0].removesuffix(".pos")
+            raw = {name: self.bus.read("Present_Position", name, normalize=False, num_retry=2)}
         else:
             raw = self.bus.sync_read("Present_Position", normalize=False, num_retry=2)
         result = {}
         for joint in self.joints:
             value = int(raw[joint.removesuffix(".pos")])
-            saved = self.saved_records[joint]
-            if not saved["range_min"] <= value <= saved["range_max"]:
+            limits = self.raw_limits[joint]
+            if not limits["min"] <= value <= limits["max"]:
                 raise ValueError(
                     f"{joint_label(joint)} is outside its saved range; inspect before moving"
                 )
@@ -63,7 +71,9 @@ class TeleopLeader:
         return result
 
     def get_action(self):
-        raw = self.raw_positions()
+        return self.convert_positions(self.raw_positions())
+
+    def convert_positions(self, raw):
         ids = {joint: self.bus.motors[joint.removesuffix(".pos")].id for joint in self.joints}
         converted = self.bus._normalize({ids[joint]: raw[joint] for joint in self.joints})
         values = validate_action({joint: converted[ids[joint]] for joint in self.joints}, self.joints)
@@ -93,6 +103,18 @@ class TeleopFollower(TeleopLeader):
     def get_observation(self):
         return self.get_action()
 
+    def hold_position(self):
+        raw = self.raw_positions()
+        measured = self.convert_positions(raw)
+        if self.changed:
+            for joint, value in raw.items():
+                self.bus.write(
+                    "Goal_Position", joint.removesuffix(".pos"), value,
+                    normalize=False, num_retry=0,
+                )
+            self.motion.committed(measured)
+        return measured
+
     def send_action(self, action):
         action = validate_action(action, self.joints)
         for joint, value in action.items():
@@ -117,7 +139,7 @@ class TeleopFollower(TeleopLeader):
             if self.joints == GRIPPER_JOINTS and self.bus.read(
                 "Torque_Enable", "gripper", normalize=False, num_retry=2,
             ):
-                raise ValueError("J6 torque changed before arming")
+                raise ValueError(f"{joint_label(self.joints[0])} torque changed before arming")
             self.changed = True
             # Seed every selected goal before enabling any selected motor.
             for joint in self.joints:
@@ -151,8 +173,8 @@ class TeleopFollower(TeleopLeader):
                         name = joint.removesuffix(".pos")
                         try:
                             raw = int(self.bus.read("Present_Position", name, normalize=False, num_retry=2))
-                            saved = self.saved_records[joint]
-                            if not saved["range_min"] <= raw <= saved["range_max"]:
+                            limits = self.raw_limits[joint]
+                            if not limits["min"] <= raw <= limits["max"]:
                                 raise ValueError(f"{name} cannot safely hold outside saved limits")
                             self.bus.write("Goal_Position", name, raw, normalize=False, num_retry=2)
                             safe_speed_restore.add(name)

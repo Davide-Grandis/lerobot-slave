@@ -146,6 +146,23 @@ def inspect_calibration(device, side, limits):
         except Exception as exc:  # noqa: BLE001 - SDK-specific register exceptions.
             item["operating_mode"] = None
             warnings.append(f"Operating mode unavailable: {exc}")
+        angular_profile = getattr(bus, "_cf_robot_angular_calibration", None)
+        angular = angular_profile.describe(name) if angular_profile is not None else None
+        if angular is not None:
+            item["angular_calibration"] = angular
+            angular_limits = angular["limits"]
+            # Keep the old wire field for existing operator assets. After
+            # migration it aliases hardware bounds, not an editable extra range.
+            item["working_range"] = angular_limits
+            item["reference_ticks"] = angular["zero_ticks"]
+            item["reference_value"] = 0.0
+            item["converted_range"] = [
+                (raw - angular["zero_ticks"]) * angular["degrees_per_tick"]
+                for raw in (angular_limits["min"], angular_limits["max"])
+            ]
+            item["positive_direction"] = angular.get("positive_direction", "verify physically")
+            if angular["error"]:
+                warnings.append(f"Angular calibration: {angular['error']}")
         item["state"] = "warning" if warnings else "consistent"
         report["joints"][joint] = item
     report["state"] = "warning" if report["warnings"] or any(
@@ -157,6 +174,7 @@ def inspect_calibration(device, side, limits):
         "joints": {
             joint: {key: item.get(key) for key in (
                 "id", "model", "mode", "resolution", "live", "operating_mode",
+                "angular_calibration", "working_range",
             )}
             for joint, item in report["joints"].items()
         },

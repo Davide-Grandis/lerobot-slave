@@ -134,7 +134,7 @@ h1 em { color: var(--orange); font-weight: 400; }
 .model-stage { position: relative; min-height: 315px; overflow: hidden; background: linear-gradient(180deg, var(--panel) 0%, var(--panel-deep) 100%); }
 #arm-canvas { display: block; width: 100%; height: 315px; touch-action: none; cursor: grab; }
 #arm-canvas:active { cursor: grabbing; }
-.model-empty { position: absolute; top: 42%; left: 50%; width: max-content; max-width: 80%; transform: translate(-50%, -50%); color: var(--muted); font: 700 9px "SFMono-Regular", Consolas, monospace; letter-spacing: .11em; text-align: center; text-transform: uppercase; pointer-events: none; }
+.model-empty { position: absolute; top: 12px; left: 15px; width: max-content; max-width: 80%; padding: 7px 9px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); font: 700 9px "SFMono-Regular", Consolas, monospace; letter-spacing: .11em; text-transform: uppercase; pointer-events: none; }
 .model-empty.hidden { display: none; }
 .model-instructions { position: absolute; bottom: 12px; left: 15px; color: var(--faint); font-size: 8px; }
 .model-readout { position: absolute; right: 15px; bottom: 11px; display: grid; gap: 4px; color: var(--muted); text-align: right; font-size: 8px; }

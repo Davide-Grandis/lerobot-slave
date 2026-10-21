@@ -65,6 +65,7 @@ export function createCalibrationPanel({ request, paired, getPose, controlStatus
       const record = (entry) => entry
         ? `ID ${entry.id}; drive ${entry.drive_mode}; offset ${entry.homing_offset}; range ${entry.range_min}..${entry.range_max}`
         : "UNAVAILABLE";
+      const angularLimits = item.angular_calibration?.limits || item.working_range || item.servo_limits;
       values.textContent = [
         `Configured ID/model: ${item.id} / ${text(item.model)}`,
         `Detected model number: ${text(item.detected_model_number)}`,
@@ -74,9 +75,18 @@ export function createCalibrationPanel({ request, paired, getPose, controlStatus
         `Operating mode: ${text(item.operating_mode)} (expected 0)`,
         `Encoder resolution: ${text(item.resolution)} ticks/turn`,
         `Actual unit: ${text(item.unit)} / saved drive mode applied: ${item.drive_mode_applied}`,
-        `Reference midpoint: ${text(item.reference_ticks)} ticks -> ${text(item.reference_value)} ${text(item.unit)}`,
+        `Conversion reference: ${text(item.reference_ticks)} ticks -> ${text(item.reference_value)} ${text(item.unit)}`,
         `Converted endpoints: ${item.converted_range?.join(" .. ") ?? "--"} ${text(item.unit)}`,
         `Positive direction: ${text(item.positive_direction)}; verify physically`,
+        ...(item.angular_calibration ? [
+          `Angular calibration: ${item.angular_calibration.state} / ${item.angular_calibration.persistence}`,
+          `Angular file: ${item.angular_calibration.file}`,
+          `Angular SHA256: ${item.angular_calibration.sha256}`,
+          `Limits source: ${item.angular_calibration.limits_source || "legacy_software"}`,
+          `Calibrated ticks: ${angularLimits?.min ?? "--"}..${angularLimits?.max ?? "--"}`,
+          `Degrees/tick: ${item.angular_calibration.degrees_per_tick}`,
+          `Bound homing offset: ${item.angular_calibration.homing_offset}`,
+        ] : []),
         ...item.warnings,
       ].join("\n");
       details.append(summary, values);

@@ -8,9 +8,9 @@ from websockets.asyncio.client import connect
 
 from cf_robot.auth import access_headers
 from cf_robot.hardware import joint_positions, make_leader
-from cf_robot.protocol import VERSION, action_message, validate_action
+from cf_robot.protocol import HOLD_CAPABILITY, VERSION, action_message, validate_action
 from cf_robot.teleop_hardware import TeleopLeader
-from cf_robot.teleop_runtime import Feedback, synchronize
+from cf_robot.teleop_runtime import Feedback, recover_live_feedback, synchronize
 
 ALIGNMENT_TOLERANCE = 5.0
 OBSERVATION_MAX_AGE_S = 0.5
@@ -46,6 +46,7 @@ class OperatorSession:
         self.last_target = None
         self.feedback = Feedback()
         self.sync_pending = False
+        self.supports_hold = False
         self.status = {
             "state": "connecting",
             "mode": self.mode,
@@ -84,6 +85,7 @@ class OperatorSession:
                 if ready.get("type") != "ready" or ready.get("version") != VERSION:
                     raise RuntimeError("follower did not send a compatible ready message")
                 self.last_target = validate_action(ready["observation"])
+                self.supports_hold = HOLD_CAPABILITY in ready.get("capabilities", [])
                 self.feedback.accept(ready)
                 self._publish(
                     state="ready",
@@ -178,8 +180,16 @@ class OperatorSession:
                 if acknowledged is not None and not acknowledged.done():
                     acknowledged.set_exception(RuntimeError("control mode changed before send"))
                 continue
-            if not self.feedback.fresh:
-                raise self.feedback.error("during live following")
+            self.seq, paused = await recover_live_feedback(
+                socket, reader, self.feedback, self.seq, self.stop_event,
+                self._sync_status, self.supports_hold,
+            )
+            if paused:
+                if acknowledged is not None and not acknowledged.done():
+                    acknowledged.set_exception(RuntimeError("feedback paused; retry the manual command"))
+                if self.mode == "manual" and self.feedback.fresh:
+                    self.last_target = dict(self.feedback["observation"])
+                continue
             self.seq += 1
             await socket.send(
                 json.dumps(action_message(self.seq, target), separators=(",", ":"))
@@ -196,10 +206,24 @@ class OperatorSession:
                     pass
 
     def _sync_status(self, message):
-        if message.get("type") == "sync_target":
+        if message.get("type") in ("sync_target", "hold_command"):
             self.seq = message["seq"]
-            self.last_target = dict(message["target"])
+            if message.get("target") is not None:
+                self.last_target = dict(message["target"])
             self._publish(commands_sent=self.status["commands_sent"] + 1)
+        elif message.get("state") == "waiting for live feedback":
+            self._publish(
+                state="waiting_feedback",
+                teleop_message="WAIT - feedback delayed; Pi holding current measured position.",
+            )
+        elif message.get("state") == "running":
+            self._publish(
+                state="synchronizing" if self.sync_pending else "ready",
+                teleop_message=(
+                    "WAIT - preparing startup sync" if self.sync_pending else
+                    "Ready for teleop" if self.mode == "leader" else "Manual mode ready"
+                ),
+            )
         elif message.get("state") == "waiting for follower feedback":
             self._publish(
                 state="synchronizing",

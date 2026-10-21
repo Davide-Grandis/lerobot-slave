@@ -53,7 +53,7 @@ this repository does not provision Cloudflare resources.
 | Controller laptop | This package and serial-device access; an SO-ARM101 leader attached by USB is required for leader-stream mode and optional for manual-only browser control. |
 | Raspberry Pi | Headless 64-bit Debian (AArch64); SO-ARM101 follower and UVC-compatible camera attached by USB; serial and video-device access. |
 | Both hosts | This package, compatible LeRobot/Feetech dependencies, separately calibrated arms, and synchronized clocks (NTP). Use the same tested LeRobot release on both hosts. |
-| Cloudflare | An account with an active zone/FQDN, a named Tunnel with a `cloudflared` connector on the Pi, an Access self-hosted application and service token, a Worker protected by Access, and a D1 database for operator records. |
+| Cloudflare | An account with an active zone/FQDN, a named Tunnel with a `cloudflared` connector on the Pi, an Access self-hosted application and service token for the Pi, a public Worker, and a D1 database for operator records. |
 
 The package and pinned LeRobot release require Python `>=3.12,<3.14`;
 Python 3.14 is not supported. The Raspberry Pi instructions use Python 3.13.
@@ -76,6 +76,10 @@ For independent leader/follower calibration inspection, physical validation
 captures, JSON reports and guided calibration setting from the Arms Monitor,
 see [Arm Calibration](docs/arm-calibration.md). Leader-only and follower-only
 sessions do not require the other arm to be connected.
+
+Known degree references and verified hardware limits can be persisted as
+[per-arm angular calibration](docs/angular-calibration.md), without changing
+servo homing offsets or unrelated joints.
 
 ## Before using hardware
 
@@ -668,6 +672,10 @@ session: inspect both arms, then start a new session. Startup sync will offer
 to move the follower to the leader's initial pose if needed.
 
 For an isolated gripper calibration test, add `--J6-only` to that command.
+For wrist-roll testing, use `--J5-only` after installing the
+[follower's independent J5 references](docs/angular-calibration.md#follower-j5-and-isolated-testing).
+`--J1-only` through `--J5-only` select their respective axes using the same shared
+controller; they do not move or change torque on other axes.
 This uses a separate J6-only control route; normal teleoperation still sends
 all six joints even if you move only the leader gripper. See
 [the J6-only live test procedure](docs/arm-calibration.md#j6-only-live-following-test).
@@ -818,13 +826,14 @@ restart its service locally after confirming no power operation is pending.
 
 #### Cloud-hosted operator app (phase 2)
 
-The operator UI is deployed as Cloudflare Worker Static Assets and protected
-by Cloudflare Access. D1 stores the robot display record and low-volume
-session/audit metadata; it is not used for video or per-frame commands.
+The operator UI is deployed as public Cloudflare Worker Static Assets; its
+metadata API does not require an Access identity. D1 stores the robot display
+record and low-volume anonymous session/audit metadata, not verified operator
+identity; it is not used for video or per-frame commands.
 The browser pairs with the controller laptop's loopback agent, which retains
 LeRobot, USB access, Access credentials, and the direct WSS path to the Pi.
 Follow [the operator app setup and runbook](docs/operator-app.md) to create
-the Worker/D1 resources, protect the app, deploy it, pair the browser, and
+the Worker/D1 resources, deploy the app, pair the browser, and
 start control.
 
 ### Configuration reference

@@ -72,6 +72,23 @@ def parse_pose_command(line, command_id):
         return {"kind": "help"}
     if text.lower() in ("q", "quit", "exit"):
         return {"kind": "stop"}
+    match = re.fullmatch(
+        r"J([1-5])\s+ANGULAR\s+PREVIEW\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)",
+        text, re.IGNORECASE,
+    )
+    if match:
+        return {"kind": "command", "message": {
+            "version": VERSION, "type": "command", "command_id": command_id,
+            "joint_id": int(match[1]), "mode": "angular_preview",
+            "write_hardware_limits": True,
+            **dict(zip(
+                ("range_min", "range_max", "negative_ticks", "positive_ticks"),
+                (int(match[index]) for index in range(2, 6)),
+            )),
+        }}
+    match = re.fullmatch(r"J([1-5])\s+ANGULAR\s+CONFIRM", text, re.IGNORECASE)
+    if match:
+        return {"kind": "confirm_angular", "joint_id": int(match[1])}
     if text.upper() == "J6 RESTORE PREVIEW":
         return {"kind": "command", "message": {
             "version": VERSION, "type": "command", "command_id": command_id,
@@ -187,10 +204,23 @@ class InspectionReports:
         self.reports = {}
         self.restore_reports = {}
         self.restore_token = None
+        self.angular_token = None
 
     def retain_restore(self, message):
         self.restore_reports[message["mode"]] = json.dumps(message, indent=2)
         self.restore_token = (message.get("calibration_preview") or {}).get("token")
+        preview = message.get("angular_preview")
+        self.angular_token = (message["joint_id"], preview["token"]) if preview else None
+
+    def confirm_angular(self, command_id, joint_id):
+        saved, self.angular_token = self.angular_token, None
+        if saved is None or saved[0] != joint_id:
+            raise ValueError(f"request and review J{joint_id} ANGULAR PREVIEW before confirming")
+        return {
+            "version": VERSION, "type": "command", "command_id": command_id,
+            "joint_id": joint_id, "mode": "angular_apply", "token": saved[1],
+            "confirmation": f"APPLY ANGULAR AND LIMITS J{joint_id}",
+        }
 
     def confirm_restore(self, command_id):
         token, self.restore_token = self.restore_token, None
@@ -225,7 +255,7 @@ class InspectionReports:
             print(f"\n{side.upper()} INSPECTION")
             print(content)
         for mode, content in self.restore_reports.items():
-            print(f"\nJ6 {mode.upper()}")
+            print(f"\nJ{json.loads(content).get('joint_id', 6)} {mode.upper()}")
             print(content)
         print("=" * 72)
         sys.stdout.flush()
@@ -373,7 +403,13 @@ def _render(build_version, leader_sample, follower_sample, command_buffer="", st
             if not sample:
                 return "--"
             bounds = sample["limits"][joint]
-            return f"{sample['raw'][joint]:4d} [{bounds['min']}..{bounds['max']}]"
+            working = ((sample.get("calibration") or {}).get("joints", {}).get(joint) or {}).get("working_range")
+            if working == bounds:
+                working = None
+            return (
+                f"{sample['raw'][joint]:4d} [{bounds['min']}..{bounds['max']}]"
+                + (f" work [{working['min']}..{working['max']}]" if working else "")
+            )
 
         print(f"   raw ticks: L {raw_description(leader_sample):24}   F {raw_description(follower_sample)}")
         print()
@@ -384,10 +420,10 @@ def _render(build_version, leader_sample, follower_sample, command_buffer="", st
     )
     print(separator)
     print("Units: J1-J5 deg, J6 % (0-100); raw/MIN/MAX ticks. LT/FT: V=ON, X=off.")
+    print("MIN/MAX are servo registers; work bounds, when shown, are persistent software calibration.")
     for side, sample in (("leader", leader_sample), ("follower", follower_sample)):
         inspection = (sample or {}).get("calibration")
         if inspection:
-            print(f"{side.capitalize()} calibration: {inspection['state']} (not physically validated)")
             if any(item["unit"] != ("%" if key == "gripper.pos" else "deg") for key, item in inspection["joints"].items()):
                 print("WARNING: actual normalization differs from the units note; use INSPECT.")
         for warning in (sample or {}).get("motion_warnings", []):
@@ -398,6 +434,7 @@ def _render(build_version, leader_sample, follower_sample, command_buffer="", st
     print("INSPECT L/F (reprinted on exit); SAVE L/F <path> (JSON, no overwrite)")
     print("CAPTURE L/F J<n> <known value> <tolerance> <pose label>")
     print("J6 RESTORE PREVIEW; then J6 RESTORE CONFIRM (J6 torque must be OFF)")
+    print("J1-J5 ANGULAR PREVIEW <MIN> <MAX> <-90 ticks> <+90 ticks>; then J<n> ANGULAR CONFIRM")
     print("CAPTURE confirms an independently measured physical pose; it never moves an arm.")
     if status_message:
         print(status_message)
@@ -509,7 +546,9 @@ async def monitor_poses(url, port, arm_id, build_version):
                                 f" ({message.get('current', 0):.2f} -> "
                                 f"{message.get('target', 0):.2f} {message.get('unit', '')})"
                             )
-                        if message.get("mode") in ("calibration_preview", "calibration_restore"):
+                        if message.get("mode") in (
+                            "calibration_preview", "calibration_restore", "angular_preview", "angular_apply",
+                        ):
                             inspections.retain_restore(message)
                             status_message = json.dumps(message, indent=2)
                     else:
@@ -564,7 +603,9 @@ async def monitor_poses(url, port, arm_id, build_version):
                                 try:
                                     message = (
                                         inspections.confirm_restore(command_id)
-                                        if parsed["kind"] == "confirm_restore" else parsed["message"]
+                                        if parsed["kind"] == "confirm_restore" else
+                                        inspections.confirm_angular(command_id, parsed["joint_id"])
+                                        if parsed["kind"] == "confirm_angular" else parsed["message"]
                                     )
                                 except ValueError as exc:
                                     status_message = str(exc)

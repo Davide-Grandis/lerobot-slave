@@ -10,12 +10,12 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
 from cf_robot.auth import access_headers
-from cf_robot.gripper_control import GripperLeader, gripper_control_url
+from cf_robot.gripper_control import GripperLeader, joint_control_url
 from cf_robot.hardware import make_leader
-from cf_robot.protocol import GRIPPER_JOINTS, JOINTS, VERSION, action_message, validate_action
+from cf_robot.protocol import HOLD_CAPABILITY, JOINTS, VERSION, action_message, validate_action
 from cf_robot.teleop_hardware import TeleopLeader
 from cf_robot.teleop_motion import joint_label
-from cf_robot.teleop_runtime import Feedback, synchronize
+from cf_robot.teleop_runtime import Feedback, recover_live_feedback, synchronize
 from cf_robot.teleop_runtime import SYNC_STEP as STARTUP_SYNC_STEP_UNITS  # noqa: F401 - compatibility export
 from cf_robot.teleop_runtime import SYNC_TIMEOUT_S as STARTUP_SYNC_SETTLE_TIMEOUT_S
 from cf_robot.teleop_runtime import SYNC_TOLERANCE as STARTUP_SYNC_TOLERANCE
@@ -41,15 +41,22 @@ async def run_teleop(
     leader_factory=None,
     sync_at_start=False,
     gripper_only=False,
+    joint_only=None,
 ):
     if not 1 <= fps <= 60:
         raise ValueError("fps must be between 1 and 60")
     stop = stop if stop is not None else asyncio.Event()
     on_status = on_status or (lambda message: None)
     leader_factory = leader_factory or (lambda: make_leader(port, arm_id))
-    joints = GRIPPER_JOINTS if gripper_only else JOINTS
-    if gripper_only:
-        url = gripper_control_url(url)
+    if gripper_only and joint_only is not None:
+        raise ValueError("select only one joint-only mode")
+    selected_id = 6 if gripper_only else joint_only
+    if selected_id is not None and (type(selected_id) is not int or not 1 <= selected_id <= 6):
+        raise ValueError("joint-only mode requires J1-J6")
+    gripper_only = selected_id == 6
+    joints = (JOINTS[selected_id - 1],) if selected_id is not None else JOINTS
+    if selected_id is not None:
+        url = joint_control_url(url, selected_id)
     headers = access_headers(url)
     leader = None
     reader = None
@@ -58,10 +65,12 @@ async def run_teleop(
         first = json.loads(await asyncio.wait_for(socket.recv(), timeout=25))
         if first.get("type") != "ready" or first.get("version") != VERSION:
             raise RuntimeError(first.get("message", "follower did not become ready"))
-        if gripper_only and (
-            first.get("mode") != "gripper-only" or first.get("joints") != list(GRIPPER_JOINTS)
+        if selected_id is not None and (
+            first.get("mode") != ("gripper-only" if gripper_only else "joint-only")
+            or first.get("joints") != list(joints)
         ):
-            raise RuntimeError("Pi did not confirm J6-only isolation; refusing to send any targets")
+            raise RuntimeError(f"Pi did not confirm J{selected_id}-only isolation; refusing to send any targets")
+        supports_hold = HOLD_CAPABILITY in first.get("capabilities", [])
         try:
             follower_pose = validate_action(first["observation"], joints)
         except (KeyError, TypeError, ValueError) as exc:
@@ -74,7 +83,7 @@ async def run_teleop(
             if gripper_only:
                 leader = GripperLeader(leader)
             elif hasattr(leader, "bus"):
-                leader = TeleopLeader(leader)
+                leader = TeleopLeader(leader, joints)
             await asyncio.to_thread(leader.connect, calibrate=False)
             if getattr(leader, "is_connected", True) is False:
                 raise RuntimeError(
@@ -98,6 +107,12 @@ async def run_teleop(
                     f"follower={follower_pose['gripper.pos']:.2f}%. "
                     "No J1-J5 goals or torque changes will be sent."
                 )
+            elif selected_id is not None:
+                joint = joints[0]
+                print(
+                    f"J{selected_id} ONLY: leader={initial[joint]:.2f} deg, "
+                    f"follower={follower_pose[joint]:.2f} deg. Other joints are untouched."
+                )
             else:
                 print("Full-arm teleoperation: J1-J5 degrees; J6 percent.")
                 for joint in joints:
@@ -114,7 +129,7 @@ async def run_teleop(
                 )
                 + (
                     "J6 will be released on stop. " if gripper_only
-                    else "The full follower will hold position on stop; keep physical support available. "
+                    else "Selected follower joints will hold position on stop; keep physical support available. "
                 )
                 + "Press Enter to continue (Ctrl-C cancels): ",
             )
@@ -154,8 +169,11 @@ async def run_teleop(
                 action = await asyncio.to_thread(leader.get_action)
                 if reader.done():
                     reader.result()
-                if not latest_feedback.fresh:
-                    raise latest_feedback.error("during live following")
+                seq, paused = await recover_live_feedback(
+                    socket, reader, latest_feedback, seq, stop, on_status, supports_hold,
+                )
+                if paused:
+                    continue  # Re-read the leader; never resume with a stale queued target.
                 seq += 1
                 await socket.send(json.dumps(action_message(seq, action, joints), separators=(",", ":")))
                 if time.monotonic() - last_gripper_report >= 0.25:
@@ -198,7 +216,13 @@ def main():
     parser.add_argument("--port", required=True, help="Local leader serial device")
     parser.add_argument("--arm-id", required=True, help="LeRobot leader calibration ID")
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument(
+    selected = parser.add_mutually_exclusive_group()
+    for joint_id in range(1, 6):
+        selected.add_argument(
+            f"--J{joint_id}-only", dest="joint_only", action="store_const", const=joint_id,
+            help=f"isolated J{joint_id} test; other joints remain untouched",
+        )
+    selected.add_argument(
         "--J6-only", dest="gripper_only", action="store_true",
         help="isolated J6 test; never send goals or torque changes to J1-J5",
     )
@@ -218,14 +242,17 @@ def main():
             isinstance(state, str) and state.startswith("synchronizing ")
         ):
             waiting_for_sync = True
-            selected = "J6" if args.gripper_only else (
+            selected = f"J{6 if args.gripper_only else args.joint_only}" if args.gripper_only or args.joint_only else (
                 state.removeprefix("synchronizing ") if state.startswith("synchronizing ") else "selected joints"
             )
             state = f"WAIT - syncing {selected}; hold the leader still."
         elif state in ("waiting for J6 feedback", "waiting for follower feedback"):
             waiting_for_sync = True
-            selected = "J6" if args.gripper_only else "selected-joint"
+            selected = f"J{6 if args.gripper_only else args.joint_only}" if args.gripper_only or args.joint_only else "selected-joint"
             state = f"WAIT - feedback delayed; holding the last {selected} sync goal."
+        elif state == "waiting for live feedback":
+            waiting_for_sync = True
+            state = "WAIT - feedback delayed; Pi holding current measured position."
         elif state == "running":
             waiting_for_sync = False
             state = "Ready for teleop"
@@ -264,6 +291,7 @@ def main():
                 on_status=report_status,
                 sync_at_start=not args.no_startup_sync,
                 gripper_only=args.gripper_only,
+                joint_only=args.joint_only,
             )
         )
     except KeyboardInterrupt:

@@ -230,6 +230,25 @@ class SharedRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "last status packet="):
             plan.advance(feedback)
 
+    def test_long_wrist_startup_can_take_more_than_thirty_seconds_while_progressing(self):
+        joints = ("wrist_roll.pos",)
+        actual = {"wrist_roll.pos": -160.0}
+        feedback = self.feedback(joints, actual)
+        plan = StartupSync({"wrist_roll.pos": 160.0}, joints, clock=lambda: self.now)
+        goal = plan.advance(feedback)
+        for _ in range(800):
+            self.now += 0.1
+            actual["wrist_roll.pos"] += max(
+                -0.7, min(0.7, goal["wrist_roll.pos"] - actual["wrist_roll.pos"]),
+            )
+            self.update(feedback, actual)
+            goal = plan.advance(feedback)
+            if plan.complete:
+                break
+        self.assertTrue(plan.complete)
+        self.assertGreater(self.now, 30)
+        self.assertLess(self.now, 60)
+
     def test_ready_requires_every_joint_to_remain_aligned_at_completion(self):
         actual = dict.fromkeys(JOINTS, 20.0)
         feedback = self.feedback(JOINTS, actual)

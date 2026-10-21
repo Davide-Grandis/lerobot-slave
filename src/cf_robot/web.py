@@ -314,6 +314,7 @@ def create_app(
                 fps=fps,
                 on_status=apply_runtime_status,
             )
+            stop_event = runtime.stop_event
             task = asyncio.create_task(runtime.run())
         task.add_done_callback(finished)
         asyncio.create_task(watch_browser(task, stop_event, not legacy_runner))

@@ -16,15 +16,6 @@
       "migrations_dir": "./migrations"
     }
   ],
-  "access": {
-    "dev": {
-      "aud": "cf-robot-operator-local",
-      "identity": {
-        "email": "operator@localhost",
-        "name": "Local Operator"
-      }
-    }
-  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

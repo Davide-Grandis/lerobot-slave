@@ -6,15 +6,17 @@ import math
 import time
 
 from cf_robot.parking import PARKING_JOINT_ORDER
-from cf_robot.protocol import GRIPPER_JOINTS, JOINTS, action_message, validate_action
+from cf_robot.protocol import GRIPPER_JOINTS, JOINTS, action_message, hold_message, validate_action
 from cf_robot.teleop_motion import joint_label
 
 FEEDBACK_FRESH_S = 0.5
 SYNC_FEEDBACK_STOP_S = 1.0
+LIVE_FEEDBACK_STOP_S = 1.0
+HOLD_INTERVAL_S = 0.1
 SYNC_TOLERANCE = 1.0
 SYNC_STEP = 2.5
 SYNC_INTERVAL_S = 0.1
-SYNC_TIMEOUT_S = 30.0
+SYNC_TIMEOUT_S = 60.0
 
 
 class Feedback(dict):
@@ -64,7 +66,7 @@ class Feedback(dict):
         def age(key):
             return "never received" if self[key] is None else f"{self.clock() - self[key]:.3f}s ago"
 
-        label = "J6 " if self.joints == GRIPPER_JOINTS else ""
+        label = f"J{JOINTS.index(self.joints[0]) + 1} " if len(self.joints) == 1 else ""
         return RuntimeError(
             f"fresh {label}follower readback lost {phase}: "
             f"last accepted sample={age('received_at')}; "
@@ -72,6 +74,43 @@ class Feedback(dict):
             "This is a feedback-timing failure, not a position-gap limit. "
             "Check Pi serial/service logs, WSS latency and clock synchronization."
         )
+
+
+async def recover_live_feedback(socket, reader, feedback, seq, stop, on_status, supports_hold=False):
+    """Pause advancement at Pi-local measured positions during a short return-path gap."""
+    if stop.is_set():
+        return seq, True
+    if feedback.fresh:
+        return seq, False
+    # Give the status reader a chance to drain already-arrived frames after
+    # a local scheduling stall before declaring a network feedback gap.
+    await asyncio.sleep(0)
+    if reader.done():
+        reader.result()
+    if feedback.fresh:
+        return seq, False
+    if not supports_hold:
+        raise RuntimeError(
+            f"{feedback.error('during live following')} "
+            "Pi does not advertise safe hold support; update its follower package/service."
+        )
+    on_status({"type": "status", "state": "waiting for live feedback"})
+    while not stop.is_set():
+        if reader.done():
+            reader.result()
+        if feedback.fresh:
+            on_status({"type": "status", "state": "running"})
+            return seq, True
+        if feedback.age >= LIVE_FEEDBACK_STOP_S:
+            raise feedback.error("during live feedback hold")
+        seq += 1
+        await socket.send(json.dumps(hold_message(seq), separators=(",", ":")))
+        on_status({"type": "hold_command", "seq": seq})
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=HOLD_INTERVAL_S)
+        except TimeoutError:
+            pass
+    return seq, True
 
 
 class StartupSync:

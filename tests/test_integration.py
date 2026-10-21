@@ -22,7 +22,7 @@ try:
 except ImportError:
     TestClient = None
 
-from cf_robot.protocol import JOINTS, action_message
+from cf_robot.protocol import HOLD_CAPABILITY, JOINTS, action_message, hold_message
 from test_control import FakeFollower, wait_for
 
 
@@ -45,6 +45,22 @@ class OriginTests(unittest.TestCase):
                 self.assertTrue(wait_for(lambda: len(robot.actions) == 1))
             self.assertTrue(wait_for(lambda: robot.disconnected))
             self.assertTrue(wait_for(lambda: not client.get("/health").json()["control_busy"]))
+
+    def test_control_advertises_and_executes_pi_local_hold(self):
+        robot = FakeFollower()
+        app = create_app("unused", "test", factory=lambda: robot, origin_key=self.key)
+        with TestClient(app) as client:
+            with client.websocket_connect("/control", headers=self.headers) as socket:
+                ready = socket.receive_json()
+                self.assertIn(HOLD_CAPABILITY, ready["capabilities"])
+                socket.send_json(action_message(1, ready["observation"]))
+                self.assertTrue(wait_for(lambda: len(robot.actions) == 1))
+                measured = {joint: 2.0 for joint in JOINTS}
+                robot.observation = dict(measured)
+                socket.send_json(hold_message(2))
+                self.assertTrue(wait_for(lambda: len(robot.actions) == 2))
+                self.assertEqual(robot.actions[-1], measured)
+            self.assertTrue(wait_for(lambda: robot.disconnected))
 
     def test_video_jpeg(self):
         class Camera:

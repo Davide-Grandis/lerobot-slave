@@ -218,6 +218,22 @@ class GripperClientTests(GripperFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bus.writes, [])
         self.assertTrue(self.bus.disconnected)
 
+    async def test_live_pause_rereads_leader_instead_of_sending_old_target(self):
+        paused = False
+
+        async def recover(socket, reader, feedback, seq, *args):
+            nonlocal paused
+            if not paused:
+                paused = True
+                self.bus.native_position += 145
+                return seq, True
+            return seq, False
+
+        with patch("cf_robot.leader.recover_live_feedback", side_effect=recover):
+            accepted, _, _ = await self.exercise(sync=False)
+        self.assertTrue(all(action["gripper.pos"] > 60 for action in accepted))
+        self.assertEqual(self.bus.writes, [])
+
 
 class GripperCliStatusTests(unittest.TestCase):
     def test_wait_and_ready_messages_distinguish_hardware_ready_from_live_following(self):

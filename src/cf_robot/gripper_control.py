@@ -8,10 +8,17 @@ from cf_robot.teleop_hardware import TeleopFollower, TeleopLeader
 
 
 def gripper_control_url(url):
+    return joint_control_url(url, 6)
+
+
+def joint_control_url(url, joint_id):
+    if type(joint_id) is not int or not 1 <= joint_id <= 6:
+        raise ValueError("joint-only mode requires J1-J6")
     parsed = urlsplit(url)
     if parsed.path not in ("", "/", "/control"):
-        raise ValueError("pass the normal /control URL with --J6-only")
-    return urlunsplit((parsed.scheme, parsed.netloc, "/control/gripper", "", ""))
+        raise ValueError(f"pass the normal /control URL with --J{joint_id}-only")
+    path = "/control/gripper" if joint_id == 6 else f"/control/joint/{joint_id}"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
 class GripperLeader(TeleopLeader):

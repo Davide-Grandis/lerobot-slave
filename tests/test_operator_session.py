@@ -3,6 +3,7 @@ import contextlib
 import json
 import time
 import unittest
+from unittest.mock import patch
 
 from cf_robot.protocol import JOINTS
 
@@ -140,6 +141,43 @@ class OperatorSessionTests(unittest.IsolatedAsyncioTestCase):
             await self.session._read_status(Socket())
         self.assertEqual(self.session.status["state"], "synchronizing")
         self.assertEqual(self.session.status["teleop_message"], "WAIT - syncing")
+
+    async def test_live_manual_pause_discards_queued_jog_and_holds_new_measurement(self):
+        session = self.session
+        session.supports_hold = True
+        queued = {**pose(), "shoulder_pan.pos": 1}
+        current = pose(3)
+        sent = []
+        original_get = session.manual_queue.get
+
+        async def dequeue():
+            command = await original_get()
+            session.feedback["received_at"] = time.monotonic() - 0.513
+            return command
+
+        class Socket:
+            async def send(self, raw):
+                message = json.loads(raw)
+                sent.append(message)
+                if message["type"] == "hold":
+                    session.feedback.accept({"observation": current, "observed_at": time.time()})
+                else:
+                    session.stop_event.set()
+
+        reader = asyncio.create_task(asyncio.Event().wait())
+        submit = asyncio.create_task(session.submit_manual(queued))
+        try:
+            with patch.object(session.manual_queue, "get", side_effect=dequeue):
+                await asyncio.wait_for(session._send_loop(Socket(), reader), 2)
+            with self.assertRaisesRegex(RuntimeError, "feedback paused"):
+                await submit
+        finally:
+            reader.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reader
+        self.assertEqual(sent[0]["type"], "hold")
+        self.assertEqual([message["action"] for message in sent if message["type"] == "action"], [current])
+        self.assertEqual(session.status["teleop_message"], "Manual mode ready")
 
 
 if __name__ == "__main__":

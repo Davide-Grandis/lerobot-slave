@@ -46,13 +46,13 @@
 
         <div class="utility-bar">
           <div class="utility-tabs" role="tablist" aria-label="Console utility">
-            <button id="teleop-tab" role="tab" aria-controls="teleop-panel" aria-selected="false" tabindex="-1" type="button">01 / Teleoperation</button>
-            <button id="pose-tab" role="tab" aria-controls="pose-panel" aria-selected="true" type="button">02 / Pose Monitor <span id="pose-tab-state"></span></button>
+            <button id="teleop-tab" role="tab" aria-controls="teleop-panel" aria-selected="true" type="button">01 / Teleoperation</button>
+            <button id="pose-tab" role="tab" aria-controls="pose-panel" aria-selected="false" tabindex="-1" type="button">02 / Pose Monitor <span id="pose-tab-state"></span></button>
           </div>
           <button class="button button-estop" id="software-stop" type="button" disabled>■ &nbsp; SOFTWARE STOP</button>
         </div>
 
-        <div id="teleop-panel" role="tabpanel" aria-labelledby="teleop-tab" hidden>
+        <div id="teleop-panel" role="tabpanel" aria-labelledby="teleop-tab">
         <section class="stage-grid">
           <article class="panel camera-panel">
             <div class="panel-heading">
@@ -95,17 +95,17 @@
         <section class="operation-grid">
           <article class="panel model-panel">
             <div class="panel-heading model-heading">
-              <div><span class="section-kicker">KINEMATIC MODEL / URDF JOINT FRAMES</span><h2>Measured pose</h2></div>
+              <div><span class="section-kicker">SO-ARM101 / SIX-JOINT STRUCTURE</span><h2>Measured pose</h2></div>
               <div class="model-legend"><span><i class="legend-follower"></i>Follower</span><span><i class="legend-leader"></i>Leader</span></div>
             </div>
             <div class="model-stage">
               <canvas id="arm-canvas" aria-label="Three-dimensional SO-ARM101 kinematic visualization"></canvas>
-              <div class="model-empty" id="model-empty">Waiting for measured servo positions</div>
+              <div class="model-empty" id="model-empty" role="status">HOME REFERENCE / NOT LIVE</div>
               <div class="model-instructions mono">DRAG TO ORBIT / SCROLL TO ZOOM</div>
               <div class="model-readout"><span>TCP / APPROX.</span><strong id="tool-position">—</strong></div>
             </div>
             <div class="joint-readings" id="joint-readings"></div>
-            <div class="model-note"><span class="note-mark">i</span><span>Kinematic view uses SO-ARM101 URDF joint frames. Confirm zero offsets against this arm before relying on spatial alignment; numeric servo readback remains authoritative.</span></div>
+            <div class="model-note"><span class="note-mark">i</span><span>J1 base yaw · J2 shoulder · J3 elbow · J4 wrist bend · J5 wrist roll · J6 gripper. Offline pose is an illustration, not the actual arm position. Geometry is approximate; verify physical zero offsets.</span></div>
           </article>
 
           <article class="panel control-panel">
@@ -135,7 +135,7 @@
         </section>
         </div>
 
-        <div id="pose-panel" role="tabpanel" aria-labelledby="pose-tab">
+        <div id="pose-panel" role="tabpanel" aria-labelledby="pose-tab" hidden>
         <section class="panel pose-panel" id="pose-diagnostics">
           <div class="panel-heading">
             <div><span class="section-kicker">SERVO DIAGNOSTICS / LEADER + FOLLOWER</span><h2>Pose Monitor</h2></div>

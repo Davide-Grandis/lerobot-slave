@@ -136,6 +136,34 @@ class FakeArm:
 
 
 class PoseMonitorTests(unittest.TestCase):
+    def test_monitor_omits_calibration_summaries_but_keeps_specific_warnings(self):
+        sample = {
+            "values": dict.fromkeys(JOINTS, 0.0),
+            "raw": dict.fromkeys(JOINTS, 2000),
+            "torque": dict.fromkeys(JOINTS, False),
+            "limits": {joint: {"min": 100, "max": 3900} for joint in JOINTS},
+            "sampled_at": 1.0,
+        }
+        joints = {joint: {"unit": "%" if joint == "gripper.pos" else "deg"} for joint in JOINTS}
+        leader = {**sample, "calibration": {"state": "consistent", "joints": joints}}
+        follower = {
+            **sample,
+            "calibration": {
+                "state": "warning",
+                "joints": {**joints, "wrist_roll.pos": {"unit": "normalized"}},
+            },
+            "motion_warnings": ["possible encoder wrap"],
+        }
+        output = StringIO()
+        with patch("cf_robot.pose_compare_client.sys.stdout", output):
+            _render("test", leader, follower)
+        text = output.getvalue()
+        self.assertNotIn("Leader calibration:", text)
+        self.assertNotIn("Follower calibration:", text)
+        self.assertIn("WARNING: actual normalization differs", text)
+        self.assertIn("WARNING (follower): possible encoder wrap", text)
+        self.assertIn("INSPECT L/F", text)
+
     def test_monitor_table_separates_header_and_joint_blocks(self):
         values = {joint: float(index) for index, joint in enumerate(JOINTS)}
         raw = {joint: 2000 for joint in JOINTS}

@@ -1,5 +1,6 @@
 """LeRobot adapters; imports are deferred so protocol tests need no hardware stack."""
 
+from cf_robot.angular_calibration import attach_angular_calibration
 from cf_robot.protocol import JOINTS
 
 CAMERA_WARMUP_S = 5
@@ -8,13 +9,15 @@ CAMERA_WARMUP_S = 5
 def make_leader(port, arm_id):
     from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
 
-    return SO101Leader(SO101LeaderConfig(port=port, id=arm_id, use_degrees=True))
+    leader = SO101Leader(SO101LeaderConfig(port=port, id=arm_id, use_degrees=True))
+    return attach_angular_calibration(leader, "leader")
 
 
 def make_follower(port, arm_id):
     from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
-    return SO101Follower(SO101FollowerConfig(port=port, id=arm_id, use_degrees=True))
+    follower = SO101Follower(SO101FollowerConfig(port=port, id=arm_id, use_degrees=True))
+    return attach_angular_calibration(follower, "follower")
 
 
 def make_camera(device, width, height, fps):

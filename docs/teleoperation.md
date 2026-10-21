@@ -37,8 +37,10 @@ dialog. After confirmation:
 5. Show **Ready for teleop** only after synchronization completes.
 
 Keep the leader still and the workspace/jaws clear. The target snapshot stays
-fixed during sync. There is a 30-second deadline per joint and a finite overall
-deadline of 30 seconds times the selected-joint count. Cancellation, errors and
+fixed during sync. There is a 60-second deadline per joint and a finite overall
+deadline of 60 seconds times the selected-joint count, allowing long-travel wrist
+rotation at the conservative speed cap. The no-progress stop remains 1 second.
+Cancellation, errors and
 timeouts stop the session, never automatically resume.
 
 `--no-startup-sync` skips the ramp, but requires manual alignment within 1 unit
@@ -55,10 +57,28 @@ delay and clock offset.
 
 After a 0.5-second startup feedback gap, show **WAIT - feedback delayed** and
 repeat only the last bounded goal, not a distant leader request. Resume sync
-only with fresh feedback. A gap reaching 1 second stops. During live following
-or browser manual operation, stale feedback stops control after 0.5 seconds.
+only with fresh feedback. A gap reaching 1 second stops.
+
+During live following or browser manual operation, a 0.5-second feedback gap
+pauses advancement using a negotiated **hold-current-position** command. The
+Pi measures the selected joints locally and holds those positions; the client
+does not resend a distant leader goal or guess from stale positions. An unarmed
+hold never enables motors. Fresh feedback resumes operation using a newly read
+leader target; a queued manual jog is discarded and must be retried. A gap
+reaching 1 second stops. The UI shows WAIT while holding, not Ready for teleop.
+
+Both Mac and Pi packages must support this optional capability. Older Pi
+services retain the immediate 0.5-second stop instead of an unsafe fallback.
 The Pi's separate 0.5-second command watchdog, sequence and timestamp checks
-remain active.
+remain active, including for hold packets. If commands stop reaching the Pi or
+the client event loop stalls long enough, that watchdog can still stop sooner.
+
+Equal accepted-sample and status-packet ages indicate no new status was received
+or processed in that interval. Fresh status packets with old accepted samples
+instead suggest cached/rejected hardware readings. A valid timestamp age such
+as -0.035 seconds does not explain a 0.513-second packet gap by clock skew alone.
+Network delay, Pi scheduling and local event-loop stalls remain distinct possible
+causes; use the diagnostics rather than recalibrating.
 
 During normal and joint-only following, the latest requested leader target
 replaces the previous request. Each applied goal is bounded within 5 degrees
@@ -98,8 +118,8 @@ Successful hold restores prior speed registers, not calibration/EEPROM settings.
 Loss of power or communication can still defeat holding: secure the arm.
 
 The isolated J6 test deliberately releases only J6 on stop, preserving its
-documented empty-gripper test behavior. Other joint-only modes must use suitable
-holding semantics for gravity-loaded axes. No stop operation enables additional
+documented empty-gripper test behavior. `--J1-only` through `--J5-only` hold only
+their selected supporting axis on stop. No stop operation enables additional
 motors or automatically starts another session.
 
 Update both Mac and Pi packages and restart their processes. Publish updated

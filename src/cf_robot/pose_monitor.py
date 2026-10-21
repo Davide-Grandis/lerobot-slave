@@ -6,6 +6,7 @@ import time
 
 from cf_robot.calibration_inspection import inspect_calibration
 from cf_robot.calibration_restore import GripperCalibrationRestore
+from cf_robot.angular_install import AngularInstall
 from cf_robot.hardware import make_follower, make_leader
 from cf_robot.protocol import JOINTS
 from cf_robot.servo_maintenance import HOME_SPEED, read_servo_limits
@@ -37,6 +38,9 @@ def _sample(device, side, limits, calibration=None, previous=None):
     for joint, motor in zip(JOINTS, MOTORS, strict=True):
         item = (calibration or {}).get("joints", {}).get(joint, {})
         saved = item.get("saved")
+        working = item.get("working_range")
+        if working and not working["min"] <= raw[motor] <= working["max"]:
+            warnings.append(f"{motor}: outside angular calibration working range.")
         if (
             saved and all(type(saved.get(key)) is int for key in ("range_min", "range_max"))
             and not saved["range_min"] <= raw[motor] <= saved["range_max"]
@@ -78,6 +82,31 @@ def validate_pose_command(message):
         raise ValueError("command_id must be a positive integer")
     joint_id = message.get("joint_id")
     mode = message.get("mode")
+    if mode in ("angular_preview", "angular_apply"):
+        if type(joint_id) is not int or not 1 <= joint_id <= 5:
+            raise ValueError("angular profiles support follower J1-J5 only; J6 is unchanged")
+        keys = {"version", "type", "command_id", "joint_id", "mode"}
+        if mode == "angular_preview":
+            fields = {"range_min", "range_max", "negative_ticks", "positive_ticks"}
+            if (
+                set(message) != keys | fields | {"write_hardware_limits"}
+                or message.get("write_hardware_limits") is not True
+                or any(type(message.get(key)) is not int for key in fields)
+            ):
+                raise ValueError(
+                    "angular preview requires integer MIN/MAX/-90/+90 references and "
+                    "write_hardware_limits=true; use the updated client"
+                )
+        else:
+            token = message.get("token")
+            if (
+                set(message) != keys | {"token", "confirmation"}
+                or message.get("confirmation") != f"APPLY ANGULAR AND LIMITS J{joint_id}"
+                or not isinstance(token, str) or len(token) != 32
+                or any(character not in "0123456789abcdef" for character in token)
+            ):
+                raise ValueError("angular apply requires a matching preview and explicit joint confirmation")
+        return dict(message)
     if mode in ("calibration_preview", "calibration_restore"):
         if type(joint_id) is not int or joint_id != 6:
             raise ValueError("targeted calibration restore supports follower J6 only")
@@ -381,6 +410,7 @@ def stream_follower_pose(
         limits = read_servo_limits(bus, strict=False)
         calibration = inspect_calibration(follower, "follower", limits)
         restore = GripperCalibrationRestore()
+        angular = AngularInstall()
         previous = None
         while not stop.is_set():
             if commands is not None:
@@ -393,7 +423,29 @@ def stream_follower_pose(
                         command_busy.set()
                     try:
                         mode = command["mode"]
-                        if mode == "calibration_preview":
+                        if mode == "angular_preview":
+                            restore.plan = None
+                            if restore.tainted:
+                                raise ValueError("resolve the incomplete J6 restore before installing angular files")
+                            preview = angular.preview(follower, command)
+                            _publish_command_result(
+                                publish, command, "preview",
+                                message="Read-only preview of MIN/MAX EEPROM writes and matching files; review before confirming.",
+                                angular_preview=preview,
+                            )
+                        elif mode == "angular_apply":
+                            restore.plan = None
+                            try:
+                                result = angular.apply(follower, command, stop)
+                                _publish_command_result(
+                                    publish, command, "succeeded",
+                                    message="Selected hardware MIN/MAX and matching files saved/verified; homing and other joints unchanged. Restart monitoring.",
+                                    angular_install=result,
+                                )
+                            finally:
+                                stop.set()  # Never continue with the old in-memory calibration.
+                        elif mode == "calibration_preview":
+                            angular.plan = None
                             preview = restore.preview(follower)
                             _publish_command_result(
                                 publish, command, "preview",
@@ -401,6 +453,7 @@ def stream_follower_pose(
                                 calibration_preview=preview,
                             )
                         elif mode == "calibration_restore":
+                            angular.plan = None
                             result = restore.apply(follower, command["token"], stop)
                             _publish_command_result(
                                 publish, command, "succeeded",
@@ -408,6 +461,7 @@ def stream_follower_pose(
                                 calibration_restore=result,
                             )
                         else:
+                            angular.plan = None
                             restore.plan = None
                             if restore.tainted and (
                                 mode != "torque" or command["enabled"]
@@ -435,6 +489,8 @@ def stream_follower_pose(
                             previous = None
                         if command_busy is not None:
                             command_busy.clear()
+                    if stop.is_set():
+                        break
             started = time.monotonic()
             sample = _sample(follower, "follower", limits, calibration, previous)
             publish(sample)

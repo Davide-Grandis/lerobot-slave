@@ -20,7 +20,7 @@ and the Pi; D1 is not a telemetry or video store.
 
 ## Cloudflare setup
 
-Use a Node.js environment with Wrangler 4. The project has no frontend
+Use a Node.js 22.13+ environment with Wrangler 4. The project has no frontend
 framework or runtime npm dependencies.
 
 1. Create a D1 database from `operator/worker`:
@@ -49,14 +49,21 @@ framework or runtime npm dependencies.
    wrangler deploy
    ```
 
-4. Assign the Worker a custom domain in the Cloudflare dashboard and protect
-   the Worker with Cloudflare Access. Restrict the Access policy to the
-   intended operators. Protect the Worker itself, including its API routes,
-   rather than only protecting the HTML page.
+4. Assign the Worker a custom domain in the Cloudflare dashboard. The hosted
+   app and its metadata API are public; no Cloudflare Access identity or login
+   is required. The Pi's separate hostname remains protected by Access.
 
-The `access.dev` identity in the Wrangler config is only for local Worker
-development; it does not authenticate production requests. Production API
-handlers require the Access identity.
+`/api/me` reports `PUBLIC OPERATOR` with `authenticated: false`. New D1 session
+and audit records use the literal `anonymous` in the existing `operator_email`
+and `actor_email` columns; no schema migration is needed. Historical identified
+records remain unchanged and cannot be updated through the anonymous API.
+
+These are unauthenticated metadata records, not proof of who operated a robot.
+Anyone can submit public session records, and possession of an anonymous
+session's UUID permits updating it. There is no public session/audit listing.
+Use edge rate limiting if abuse becomes a concern. The API never grants robot
+access, accepts controller pairing codes, or stores Pi credentials: hardware
+control still requires the local loopback bridge and its pairing code.
 
 ## Start the controller agent
 
@@ -106,7 +113,17 @@ a request header. If the browser blocks local-network access, use the
 controller-local page at `http://127.0.0.1:8080` while resolving the browser
 permission issue.
 
+The video path is follower `/video` WebSocket -> local controller
+`/api/video/frame` -> browser JPEG decoding. It does not pass through the
+hosted Worker or D1. The camera opens when the paired Teleoperation tab is
+shown; pairing on Pose Monitor alone does not open it. Only successfully
+decoded frames count as live in browser heartbeats. Missing/stale follower
+frames or loss of browser video stops the active controller session and
+latches the software stop; recovery never automatically restarts motion.
+
 ## Operator workflow
+
+The app always opens on **01 / Teleoperation**, including after a page refresh.
 
 1. Pair the hosted page with the controller laptop and wait for the follower
    camera to show fresh frames.
@@ -125,11 +142,27 @@ permission issue.
 5. A software-stop latch requires typing `RE-ARM` after inspecting the robot.
    It does not replace the physical emergency stop.
 
-The canvas renders a kinematic skeleton from SO-ARM101 URDF joint transforms
-and current servo feedback. It also draws the leader as a dashed comparison
-pose. The model's zero offsets and mounting frame must be verified against the
+The Measured pose canvas and both Pose Monitor views use the same approximate
+SO-ARM101 model, retaining URDF joint transforms and current servo feedback.
+J1 is the vertical base bearing; J2/J3/J4 are the shoulder, elbow and wrist
+bends; J5 rolls the whole gripper axially; J6 moves only the opening jaw against
+the fixed jaw. Two long forked arm links connect J2-J3 and J3-J4, followed by a
+compact wrist yoke. White shells, dark servo bodies and orange joint accents
+identify the follower; the leader uses teal. Joint callouts J1-J6 are drawn on
+the models.
+
+Before connecting or after disconnecting, the main view shows a bent,
+open-gripper illustration reference based on the arm's physical structure, labelled
+`HOME REFERENCE / NOT LIVE`. This is a visual placeholder, not the physical
+arm's measured position, a zero-angle pose, or its calibration-dependent
+go-home target; joint readings remain blank. Old feedback during an active session is labelled
+`LAST SAMPLE / NOT LIVE`, while fresh feedback is labelled `LIVE FOLLOWER / MEASURED`.
+The model's zero offsets and mounting frame must be verified against the
 physical arms before treating its spatial overlay as precise; the numerical
-servo readback and the live camera remain the operational references.
+servo readback and the live camera remain the operational references. Angle
+ranges printed on product pictures are not used as software limits or
+calibration offsets. The approximate tool readout follows the fixed hand frame;
+opening J6 does not invent another wrist rotation or move that reference.
 
 ## Development and checks
 
@@ -144,7 +177,7 @@ development. The local app UI can also be served by the Python controller
 agent, which is useful for testing the bridge without deploying a Worker.
 When exercising the Wrangler-hosted page against a local controller agent,
 set `CF_ROBOT_OPERATOR_ORIGIN=http://localhost:8787` and enter the pairing
-code printed by the agent. Production uses the Access-protected HTTPS origin.
+code printed by the agent. Production uses the public hosted HTTPS origin.
 
 Run the Python regression suite from the project root:
 

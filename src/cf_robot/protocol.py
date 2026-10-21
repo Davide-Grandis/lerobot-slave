@@ -15,6 +15,7 @@ JOINTS = (
 GRIPPER_JOINTS = ("gripper.pos",)
 MAX_AGE_S = 0.5
 MAX_FUTURE_S = 0.25
+HOLD_CAPABILITY = "hold-current-position"
 
 
 class ProtocolError(ValueError):
@@ -25,6 +26,8 @@ def validate_action(action, joints=JOINTS):
     if not isinstance(action, dict) or set(action) != set(joints):
         if joints == GRIPPER_JOINTS:
             raise ProtocolError("gripper-only action must contain only gripper.pos")
+        if len(joints) == 1:
+            raise ProtocolError(f"joint-only action must contain only {joints[0]}")
         raise ProtocolError("action must contain exactly the six SO-ARM101 joints")
     cleaned = {}
     for name in joints:
@@ -43,8 +46,11 @@ def validate_action(action, joints=JOINTS):
     return cleaned
 
 
-def validate_command(message, last_seq, now=None, joints=JOINTS):
-    if not isinstance(message, dict) or message.get("version") != VERSION or message.get("type") != "action":
+def validate_command(message, last_seq, now=None, joints=JOINTS, allow_hold=False):
+    if (
+        not isinstance(message, dict) or message.get("version") != VERSION
+        or message.get("type") not in (("action", "hold") if allow_hold else ("action",))
+    ):
         raise ProtocolError("unsupported command")
     seq = message.get("seq")
     if isinstance(seq, bool) or not isinstance(seq, int) or seq <= last_seq:
@@ -55,6 +61,10 @@ def validate_command(message, last_seq, now=None, joints=JOINTS):
     age = (time.time() if now is None else now) - sent_at
     if age > MAX_AGE_S or age < -MAX_FUTURE_S:
         raise ProtocolError("stale command or unsynchronized clocks")
+    if message["type"] == "hold":
+        if set(message) != {"version", "type", "seq", "sent_at"}:
+            raise ProtocolError("hold takes no action or joint values")
+        return seq, None
     return seq, validate_action(message.get("action"), joints)
 
 
@@ -66,3 +76,7 @@ def action_message(seq, action, joints=JOINTS):
         "sent_at": time.time(),
         "action": validate_action(action, joints),
     }
+
+
+def hold_message(seq):
+    return {"version": VERSION, "type": "hold", "seq": seq, "sent_at": time.time()}

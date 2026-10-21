@@ -21,7 +21,7 @@ import uvicorn
 from cf_robot.control import FollowerSession
 from cf_robot.gripper_control import GripperFollower
 from cf_robot.hardware import make_camera, make_follower
-from cf_robot.protocol import GRIPPER_JOINTS, JOINTS, VERSION, validate_command
+from cf_robot.protocol import HOLD_CAPABILITY, JOINTS, VERSION, validate_command
 from cf_robot.pose_monitor import stream_follower_pose, validate_pose_command
 from cf_robot.servo_maintenance import (
     calculate_home_positions,
@@ -93,13 +93,20 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
 
     @app.websocket("/control")
     async def control(ws: WebSocket):
-        await control_session(ws, gripper_only=False)
+        await control_session(ws)
 
     @app.websocket("/control/gripper")
     async def gripper_control(ws: WebSocket):
-        await control_session(ws, gripper_only=True)
+        await control_session(ws, joint_only=6)
 
-    async def control_session(ws, gripper_only):
+    @app.websocket("/control/joint/{joint_id}")
+    async def joint_control(ws: WebSocket, joint_id: int):
+        if not 1 <= joint_id <= 5:
+            await ws.close(code=1008)
+            return
+        await control_session(ws, joint_only=joint_id)
+
+    async def control_session(ws, joint_only=None):
         if not hmac.compare_digest(ws.headers.get("x-cf-robot-key", ""), origin_key):
             await ws.close(code=1008)
             return
@@ -114,10 +121,13 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             await ws.close(code=1008, reason="another operator is connected")
             return
         async with control_lock:
-            joints = GRIPPER_JOINTS if gripper_only else JOINTS
-            session_factory = (
-                (lambda: GripperFollower(follower_factory())) if gripper_only else control_factory
-            )
+            joints = (JOINTS[joint_only - 1],) if joint_only is not None else JOINTS
+            def session_factory():
+                if joint_only == 6:
+                    return GripperFollower(follower_factory())
+                if joint_only is not None:
+                    return TeleopFollower(follower_factory(), joints)
+                return control_factory()
             session = FollowerSession(session_factory, joints=joints)
             session.start()
             try:
@@ -130,7 +140,11 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                         "version": VERSION,
                         "observation": session.initial_observation,
                         "observed_at": session.observed_at,
-                        **({"mode": "gripper-only", "joints": list(joints)} if gripper_only else {}),
+                        "capabilities": [HOLD_CAPABILITY],
+                        **({
+                            "mode": "gripper-only" if joint_only == 6 else "joint-only",
+                            "joints": list(joints),
+                        } if joint_only is not None else {}),
                     }
                 )
                 last_seq = 0
@@ -145,8 +159,13 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                         raw = None
                     if raw is not None:
                         try:
-                            seq, action = validate_command(json.loads(raw), last_seq, joints=joints)
-                            session.submit(action)
+                            seq, action = validate_command(
+                                json.loads(raw), last_seq, joints=joints, allow_hold=True,
+                            )
+                            if action is None:
+                                session.submit_hold()
+                            else:
+                                session.submit(action)
                             last_seq = seq
                         except (ValueError, TypeError) as exc:
                             await ws.send_json({"type": "error", "message": str(exc)})
@@ -790,6 +809,11 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
             # Stop the concurrent receive before sending the terminal frame. Otherwise
             # it can consume the client's close frame while the server is still exiting.
             for task in (receive_task, sample_task):
+                if (
+                    not client_disconnected and task is sample_task
+                    and task is not None and task.done() and not task.cancelled()
+                ):
+                    await ws.send_json(task.result())
                 if task is not None and not task.done():
                     task.cancel()
                 if task is not None:
@@ -806,6 +830,9 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                 if not client_disconnected:
                     await ws.send_json({"type": "error", "message": str(exc)})
             if not client_disconnected:
+                await asyncio.sleep(0)
+                while not samples.empty():
+                    await ws.send_json(samples.get_nowait())
                 await ws.send_json({"type": "monitor_finished"})
         except WebSocketDisconnect:
             client_disconnected = True

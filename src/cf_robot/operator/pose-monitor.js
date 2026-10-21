@@ -100,8 +100,13 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
     }
     JOINTS.forEach((joint, index) => {
       const key = joint.key;
-      const limits = (sample) => sample?.limits?.[key]
-        ? `${sample.limits[key].min}..${sample.limits[key].max}` : "--";
+      const limits = (sample) => {
+        if (!sample?.limits?.[key]) return "--";
+        const hardware = `${sample.limits[key].min}..${sample.limits[key].max}`;
+        const working = sample.calibration?.joints?.[key]?.working_range;
+        return working && (working.min !== sample.limits[key].min || working.max !== sample.limits[key].max)
+          ? `${working.min}..${working.max} work / HW ${hardware}` : hardware;
+      };
       const torque = (sample) => typeof sample?.torque?.[key] === "boolean"
         ? sample.torque[key] ? "V" : "X" : "--";
       const leaderMode = leader?.calibration?.joints[key]?.mode;

@@ -1,6 +1,8 @@
 const SESSION_ID_PATTERN = /^[0-9a-f-]{36}$/i;
 const VALID_MODES = new Set(["manual", "leader"]);
 const TERMINAL_STATES = new Set(["stopped", "error"]);
+// Preserve the existing schema without claiming an authenticated operator.
+const PUBLIC_ACTOR = "anonymous";
 
 function json(data, status = 200) {
   return Response.json(data, {
@@ -9,24 +11,13 @@ function json(data, status = 200) {
   });
 }
 
-async function identityFrom(context) {
-  if (context.access?.getIdentity) {
-    return context.access.getIdentity();
-  }
-  return null;
-}
-
 function requestJson(request) {
   return request.json().catch(() => null);
 }
 
-async function handleApi(request, env, identity, url) {
-  if (!identity?.email) {
-    return json({ error: "Access identity is unavailable for this request" }, 401);
-  }
-
+async function handleApi(request, env, url) {
   if (request.method === "GET" && url.pathname === "/api/me") {
-    return json({ email: identity.email, name: identity.name ?? identity.email });
+    return json({ name: "PUBLIC OPERATOR", authenticated: false });
   }
 
   if (request.method === "GET" && url.pathname === "/api/robots") {
@@ -58,11 +49,11 @@ async function handleApi(request, env, identity, url) {
         `INSERT INTO control_sessions
           (id, robot_id, operator_email, mode, state, started_at)
          VALUES (?, ?, ?, ?, 'running', ?)`,
-      ).bind(body.id, body.robot_id, identity.email, body.mode, startedAt),
+      ).bind(body.id, body.robot_id, PUBLIC_ACTOR, body.mode, startedAt),
       env.DB.prepare(
         `INSERT INTO audit_events (session_id, robot_id, actor_email, event_type)
          VALUES (?, ?, ?, 'session_started')`,
-      ).bind(body.id, body.robot_id, identity.email),
+      ).bind(body.id, body.robot_id, PUBLIC_ACTOR),
     ]);
     return json({ id: body.id, state: "running", started_at: startedAt }, 201);
   }
@@ -75,7 +66,7 @@ async function handleApi(request, env, identity, url) {
     }
     const session = await env.DB.prepare(
       "SELECT id, robot_id FROM control_sessions WHERE id = ? AND operator_email = ?",
-    ).bind(sessionMatch[1], identity.email).first();
+    ).bind(sessionMatch[1], PUBLIC_ACTOR).first();
     if (!session) {
       return json({ error: "Session not found" }, 404);
     }
@@ -92,12 +83,12 @@ async function handleApi(request, env, identity, url) {
           ? body.command_count
           : 0,
         session.id,
-        identity.email,
+        PUBLIC_ACTOR,
       ),
       env.DB.prepare(
         `INSERT INTO audit_events (session_id, robot_id, actor_email, event_type)
          VALUES (?, ?, ?, ?)`,
-      ).bind(session.id, session.robot_id, identity.email, eventType),
+      ).bind(session.id, session.robot_id, PUBLIC_ACTOR, eventType),
     ]);
     return json({ id: session.id, state: body.state });
   }
@@ -106,12 +97,11 @@ async function handleApi(request, env, identity, url) {
 }
 
 export default {
-  async fetch(request, env, context) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/api/")) {
       try {
-        const identity = await identityFrom(context);
-        return await handleApi(request, env, identity, url);
+        return await handleApi(request, env, url);
       } catch (error) {
         console.error(JSON.stringify({
           event: "operator_api_error",

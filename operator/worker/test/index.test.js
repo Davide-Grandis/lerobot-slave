@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import worker from "../src/index.js";
-import { alignmentDelta, forwardKinematics, JOINTS } from "../../../src/cf_robot/operator/arm-viewer.js";
+import { alignmentDelta, forwardKinematics, HOME_POSE, JOINTS } from "../../../src/cf_robot/operator/arm-viewer.js";
 
 const request = (path, method = "GET", body) => new Request(`https://operator.example${path}`, {
   method,
@@ -10,20 +10,20 @@ const request = (path, method = "GET", body) => new Request(`https://operator.ex
   ...(body ? { body: JSON.stringify(body) } : {}),
 });
 
-test("API routes require an Access identity", async () => {
+test("public operator endpoint works without an Access identity", async () => {
   const response = await worker.fetch(request("/api/me"), { DB: {} }, {});
-  assert.equal(response.status, 401);
-  assert.deepEqual(await response.json(), { error: "Access identity is unavailable for this request" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { name: "PUBLIC OPERATOR", authenticated: false });
 });
 
-test("identity endpoint exposes only the authenticated operator", async () => {
+test("public operator endpoint never consults or exposes an Access identity", async () => {
   const response = await worker.fetch(
     request("/api/me"),
     { DB: {} },
-    { access: { getIdentity: async () => ({ email: "davide@example.com", name: "Davide" }) } },
+    { access: { getIdentity: async () => { throw new Error("Access must not be consulted"); } } },
   );
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { email: "davide@example.com", name: "Davide" });
+  assert.deepEqual(await response.json(), { name: "PUBLIC OPERATOR", authenticated: false });
 });
 
 test("static paths are delegated to Workers Static Assets", async () => {
@@ -35,13 +35,20 @@ test("static paths are delegated to Workers Static Assets", async () => {
   assert.equal(called, true);
 });
 
-test("SO-ARM101 kinematics returns a finite base and six-joint chain", () => {
+test("SO-ARM101 kinematics returns a finite base, arm and tool reference", () => {
   const zero = Object.fromEntries(JOINTS.map(({ key }) => [key, 0]));
   const points = forwardKinematics(zero);
   assert.equal(points.length, 7);
   assert.ok(points.flat().every(Number.isFinite));
   const turned = forwardKinematics({ ...zero, "shoulder_pan.pos": 30 });
   assert.notDeepEqual(turned[2], points[2]);
+});
+
+test("offline home reference is an immutable complete illustration pose", () => {
+  assert.deepEqual(Object.keys(HOME_POSE), JOINTS.map(({ key }) => key));
+  assert.ok(JOINTS.every(({ key, min, max }) => HOME_POSE[key] >= min && HOME_POSE[key] <= max));
+  assert.ok(Object.isFrozen(HOME_POSE));
+  assert.ok(forwardKinematics(HOME_POSE).flat().every(Number.isFinite));
 });
 
 test("alignment differences are calculated in the six servo channels", () => {

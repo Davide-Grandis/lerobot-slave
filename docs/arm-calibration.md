@@ -10,6 +10,14 @@ servo configuration and the physical meaning of the resulting joint value.
 Leader/follower comparison is optional, not a substitute for validating each
 arm against a known physical reference.
 
+For known angular reference points with a zero/scale independent of the servo
+range midpoint, see [Independent Angular References](angular-calibration.md).
+These persistent per-arm profiles are shared by the monitor and teleoperation;
+their zero/scale are independent of the hardware limits. Confirmed J1-J5 limit
+updates program hardware MIN/MAX and mirror them to the SDK file, without a
+second software range. Legacy software-only profiles remain readable until
+that explicit migration.
+
 ## Inspect One Arm
 
 In Pose Monitor, choose **Leader only**, **Follower only** or **Both arms** before
@@ -320,13 +328,15 @@ first-target alignment guard, then sends only J6 goals at most 2.5 percentage
 points from measured position every 0.1 seconds. Keepalives preserve the command
 watchdog while moving/settling. The leader startup target stays fixed throughout
 sync, even if the leader is moved. Persistent stale feedback, cancellation, driver errors
-or a 30-second timeout stop the session instead of entering live following.
+or a 60-second per-joint timeout stop the session instead of entering live following.
 For a brief startup feedback gap, after 0.5 seconds the CLI displays
 `WAIT - feedback delayed; holding the last J6 sync goal` and repeats only the
 last bounded goal to maintain the command watchdog. It neither issues a farther
 goal nor enters live following using stale samples. Fresh feedback resumes
-sync; a gap reaching 1 second stops the session. Live following retains its
-0.5-second feedback stop. Repeated copies of the same hardware timestamp do not
+sync; a gap reaching 1 second stops the session. Updated live sessions pause at
+0.5 seconds using Pi-local hold-current-position and stop at 1 second if feedback
+does not recover. This requires updated Mac and Pi packages; an older Pi still
+fails closed at 0.5 seconds. Repeated copies of the same hardware timestamp do not
 reset these timers. Feedback errors report the ages of the last accepted sample
 and last status packet, plus the last timestamp/validation result, to distinguish
 missing packets from cached samples or clock-offset rejection. The Pi's command

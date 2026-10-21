@@ -63,6 +63,17 @@ confirmation, the Mac seeds the measured J6 position, ramps only J6 toward a
 fixed leader startup snapshot and waits for fresh measured settling before
 live following. The Pi's first-target guard remains unchanged.
 
+J1-J5 isolated tests use `WS /control/joint/{id}` and ready metadata
+`mode=joint-only` with exactly the selected position key. These share the same
+hardware owner, interlocks, feedback holds and motion policy. They hold the
+selected axis on stop rather than releasing a gravity-loaded wrist/arm.
+The monitor's `angular_preview` / `angular_apply` commands program selected
+J1-J5 MIN/MAX EEPROM and matching angular/SDK files, with explicit hardware-write
+intent, a one-use nonce, readback and backups. Homing, torque, goal registers and
+other joints are never written; arbitrary paths are not accepted.
+The monitor stops after apply and flushes its
+final result before the terminal frame so clients cannot retain old mappings.
+
 The Pose Monitor supports independent local leader or remote follower sessions,
 as well as comparison. Calibration maintenance, monitoring and teleoperation are
 mutually exclusive in the controller; Pi routes retain their separate hardware
@@ -87,6 +98,15 @@ evidence limits and setting safeguards.
   ```json
   {"version":1,"type":"action","seq":1,"sent_at":1730000000.123,"action":{"shoulder_pan.pos":0,"shoulder_lift.pos":0,"elbow_flex.pos":0,"wrist_flex.pos":0,"wrist_roll.pos":0,"gripper.pos":0}}
   ```
+
+- Updated ready messages advertise `capabilities=["hold-current-position"]`.
+  During a brief live feedback gap the client can send
+  `{"version":1,"type":"hold","seq":2,"sent_at":1730000000.2}` with no joint
+  values. The sole hardware-owner thread reads and holds its own selected
+  joints. It never arms an unarmed session. Holds obey the same sequence,
+  timestamp and 500 ms command watchdog checks as actions. Without this
+  negotiated capability the client fails closed at the original feedback
+  threshold; it never substitutes an old far-away target.
 
 - The Pi rejects a duplicate/out-of-order sequence, missing/extra joint,
   non-finite or non-numeric position, position outside +/-360, command older
@@ -138,9 +158,12 @@ requires a shared `CF_ROBOT_ORIGIN_KEY` (at least 32 characters) as
 `X-CF-Robot-Key` on all Pi WebSocket routes. This limits the damage of an
 accidentally unprotected hostname; it does not replace Access or physical
 safety controls. `/health` is HTTP and has no origin-key check, so protect
-it with the same Access application. The app Worker is separately protected
-by Cloudflare Access; its API uses the authenticated identity for D1 audit
-records. D1 never stores the Access token or origin key. The laptop API
+it with the same Access application. The app Worker and its metadata API are
+public and do not use Access identity. New D1 session/audit records are
+attributed to `anonymous`; they are untrusted metadata, not operator identity
+or authorization. Anonymous session UUIDs allow updates to those records;
+historical identified records are not editable through that path. D1 never
+stores the Access token, pairing code, or origin key. The laptop API
 restricts Host to loopback, allows only the exact configured Worker origin
 for cross-origin requests, and requires a one-run pairing code in a request
 header. It still binds only to `127.0.0.1`; never expose it with a reverse

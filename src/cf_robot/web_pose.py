@@ -85,6 +85,7 @@ class BrowserPoseMonitor:
         if not isinstance(body, dict) or set(body) not in (
             {"joint_id", "mode", "value"}, {"joint_id", "mode", "enabled"},
             {"joint_id", "mode"}, {"joint_id", "mode", "token", "confirmation"},
+            {"joint_id", "mode", "range_min", "range_max", "negative_ticks", "positive_ticks", "write_hardware_limits"},
         ):
             raise ValueError("provide one joint, mode, and value or enabled flag")
         command = validate_pose_command({
@@ -97,10 +98,10 @@ class BrowserPoseMonitor:
             or (sample.get("calibration") or {}).get("state") != "consistent"
         ):
             raise ValueError("fresh follower sample and consistent calibration inspection required")
-        if command["mode"] in ("calibration_preview", "calibration_restore") and (
+        if command["mode"] in ("calibration_preview", "calibration_restore", "angular_preview", "angular_apply") and (
             not sample or not 0 <= time.time() - sample["sampled_at"] < 1.5
         ):
-            raise ValueError("fresh follower sample required for J6 calibration restore")
+            raise ValueError("fresh follower sample required for calibration changes")
         self.command_id = command["command_id"]
         self.status["command_pending"] = True
         self.pending_since = time.monotonic()

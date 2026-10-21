@@ -1,4 +1,4 @@
-import { JOINTS, alignmentDelta, createArmViewer, forwardKinematics } from "./arm-viewer.js";
+import { HOME_POSE, JOINTS, alignmentDelta, createArmViewer, forwardKinematics } from "./arm-viewer.js";
 import { createPoseMonitor } from "./pose-monitor.js";
 
 const state = {
@@ -63,7 +63,7 @@ const elements = {
   rearmConfirmation: $("rearm-confirmation"),
 };
 
-const viewer = createArmViewer(elements.canvas);
+const viewer = createArmViewer(elements.canvas, { solid: true });
 let poseMonitor = null;
 
 function localControllerUrl() {
@@ -178,20 +178,28 @@ function makeJogControls() {
 }
 
 function poseMatches(pose) {
-  return pose && JOINTS.every((joint) => Number.isFinite(Number(pose[joint.key])));
+  return pose && JOINTS.every((joint) => Number.isFinite(pose[joint.key]));
 }
 
 function formatValue(joint, value) {
-  if (!Number.isFinite(Number(value))) return "—";
+  if (!Number.isFinite(value)) return "—";
   return `${Number(value).toFixed(1)}${joint.unit}`;
 }
 
 function renderMeasurements(status) {
-  const follower = status.follower_positions;
-  const leader = status.leader_positions;
+  const follower = status.running && poseMatches(status.follower_positions) ? status.follower_positions : null;
+  const leader = follower && status.leader_connected && poseMatches(status.leader_positions)
+    ? status.leader_positions : null;
+  const age = Date.now() / 1000 - status.follower_observed_at;
+  const fresh = follower && Number.isFinite(status.follower_observed_at) && age >= 0 && age <= 1.5;
   const delta = alignmentDelta(leader, follower);
-  elements.modelEmpty.classList.toggle("hidden", poseMatches(follower));
-  viewer.setPoses(follower, leader);
+  const modelState = !follower ? "home" : fresh ? "live" : "stale";
+  if (elements.canvas.dataset.state !== modelState) {
+    elements.canvas.dataset.state = modelState;
+    elements.modelEmpty.textContent = !follower ? "HOME REFERENCE / NOT LIVE"
+      : fresh ? "LIVE FOLLOWER / MEASURED" : "LAST SAMPLE / NOT LIVE";
+  }
+  viewer.setPoses(follower || HOME_POSE, leader);
   if (poseMatches(follower)) {
     const point = forwardKinematics(follower).at(-1);
     elements.toolPosition.textContent = point.map((value) => `${(value * 1000).toFixed(0)}`).join(" / ") + " mm";
@@ -234,7 +242,7 @@ function updateButtons(status) {
   elements.jogList.querySelectorAll(".jog-button").forEach((button) => {
     button.disabled = !connected || state.mode !== "manual" || state.manualBusy || stopped;
   });
-  elements.sessionState.textContent = status.state === "synchronizing" ? "WAIT"
+  elements.sessionState.textContent = ["synchronizing", "waiting_feedback"].includes(status.state) ? "WAIT"
     : status.state === "ready" && status.mode === "leader" ? "Ready for teleop"
       : String(status.state || "idle").replaceAll("_", " ").toUpperCase();
   elements.sessionState.dataset.state = status.state || "idle";
@@ -246,7 +254,7 @@ function updateButtons(status) {
       : cameraLive
         ? "Camera is live. Connect the follower when the workspace is clear."
         : "Camera must be live before a control session can connect.");
-  elements.followerConnection.textContent = connected || status.state === "synchronizing"
+  elements.followerConnection.textContent = connected || ["synchronizing", "waiting_feedback"].includes(status.state)
     ? "CONNECTED" : status.running ? "CONNECTING" : "OFFLINE";
   elements.leaderConnection.textContent = status.leader_connected ? "CONNECTED" : "NOT CONNECTED";
   elements.alignmentState.textContent = !status.leader_connected
@@ -287,8 +295,13 @@ async function pollStatus() {
   try {
     const status = await agentRequest("/api/status");
     elements.latency.textContent = `${Math.round(performance.now() - requestedAt)} ms`;
+    const resumedManual = state.agent?.state === "waiting_feedback"
+      && status.state === "ready" && status.mode === "manual";
     state.agent = status;
     state.mode = status.mode || "manual";
+    if (resumedManual && poseMatches(status.follower_positions)) {
+      state.manualPose = { ...status.follower_positions };
+    }
     updateButtons(status);
     if (!status.running && state.sessionId) {
       await recordSessionEnd(status.state === "error" ? "error" : "stopped");
@@ -298,6 +311,7 @@ async function pollStatus() {
     if (!status.camera_live) setCameraLive(false, status.camera_error || "Camera unavailable. Control remains disarmed.");
   } catch (error) {
     state.agent = null;
+    renderMeasurements({});
     setCameraLive(false, "Controller or camera unavailable. Check the local bridge.");
     elements.sessionState.textContent = "OFFLINE";
     elements.sessionDetail.textContent = error.message;
@@ -321,6 +335,14 @@ async function pollFrame() {
     if (!response.ok) throw new Error("camera frame unavailable");
     const blob = await response.blob();
     const nextUrl = URL.createObjectURL(blob);
+    try {
+      const frame = new Image();
+      frame.src = nextUrl;
+      await frame.decode();
+    } catch (error) {
+      URL.revokeObjectURL(nextUrl);
+      throw error;
+    }
     if (state.frameUrl) URL.revokeObjectURL(state.frameUrl);
     state.frameUrl = nextUrl;
     state.lastFrameAt = Date.now();
@@ -353,10 +375,10 @@ async function heartbeat() {
   window.setTimeout(heartbeat, 1000);
 }
 
-async function connectWorkerIdentity() {
+async function connectWorkerMetadata() {
   try {
-    const identity = await workerRequest("/api/me");
-    elements.identity.textContent = identity.name || identity.email;
+    const operator = await workerRequest("/api/me");
+    elements.identity.textContent = operator.name || "PUBLIC OPERATOR";
     const { robots } = await workerRequest("/api/robots");
     const robot = robots?.[0];
     if (robot) {
@@ -563,8 +585,9 @@ async function rearm() {
 
 elements.pairingOrigin.value = state.controllerBase;
 makeJogControls();
+renderMeasurements({});
 updateTheme();
-connectWorkerIdentity();
+connectWorkerMetadata();
 poseMonitor = createPoseMonitor({
   request: agentRequest,
   paired: () => state.paired,

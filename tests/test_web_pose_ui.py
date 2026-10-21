@@ -23,12 +23,16 @@ const originalFetch = window.fetch.bind(window);
 window.testCommands = [];
 window.testModeRequests = [];
 window.testControl = {running:false,state:'idle',camera_live:false};
+window.testControlOffline = false;
+window.testControlSampleAge = 0;
 window.testPoseOffline = false;
 window.testLeaderOffset = 0;
 window.testFollowerOffset = 0;
 window.testMissingLeader = false;
 window.testSampleAge = 0;
 window.testVideoRequests = 0;
+window.testVideoMode = 'offline';
+window.testVideoHeartbeats = [];
 window.testJ6Torque = true;
 const keys = ['shoulder_pan.pos','shoulder_lift.pos','elbow_flex.pos',
               'wrist_flex.pos','wrist_roll.pos','gripper.pos'];
@@ -56,11 +60,18 @@ window.fetch = async (url, options={}) => {
   const reply = (payload,status=200) => new Response(JSON.stringify(payload),
     {status,headers:{'Content-Type':'application/json'}});
   if (!path.startsWith('/api/')) return originalFetch(url,options);
+  if (path === '/api/me') return reply({name:'PUBLIC OPERATOR',authenticated:false});
+  if (path === '/api/robots') return reply({robots:[{id:'so101-main'}]});
   if (path === '/api/config') {
     window.pairedAddress = new URL(url).origin;
     return reply({api_version:1});
   }
-  if (path === '/api/status') return reply(window.testControl);
+  if (path === '/api/status' && window.testControlOffline) return reply({},503);
+  if (path === '/api/status') return reply({
+    ...window.testControl,
+    follower_observed_at:window.testControl.follower_positions
+      ? Date.now()/1000-window.testControlSampleAge : null
+  });
   if (path === '/api/mode') {
     const body=JSON.parse(options.body);
     window.testModeRequests.push(body);
@@ -68,8 +79,24 @@ window.fetch = async (url, options={}) => {
       teleop_message:'WAIT - synchronizing follower'};
     return reply(window.testControl);
   }
-  if (path === '/api/heartbeat') return reply({ok:true});
-  if (path === '/api/video/frame') { window.testVideoRequests++; return reply({},503); }
+  if (path === '/api/heartbeat') {
+    window.testVideoHeartbeats.push(JSON.parse(options.body));
+    return reply({ok:true});
+  }
+  if (path === '/api/video/frame') {
+    window.testVideoRequests++;
+    if (window.testVideoMode === 'offline') return reply({},503);
+    if (window.testVideoMode === 'corrupt') {
+      return new Response('not a JPEG', {headers:{'Content-Type':'image/jpeg'}});
+    }
+    const canvas=document.createElement('canvas');
+    canvas.width=64; canvas.height=48;
+    const context=canvas.getContext('2d');
+    context.fillStyle=window.testVideoRequests%2?'#ff0000':'#0000ff';
+    context.fillRect(0,0,64,48);
+    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg'));
+    return new Response(blob,{headers:{'Content-Type':'image/jpeg'}});
+  }
   if (path === '/api/pose/start') {
     sides=JSON.parse(options.body).sides || 'both'; running=true; return reply({running});
   }
@@ -186,6 +213,7 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                     origin = f"http://127.0.0.1:{server.server_port}"
                     await cdp("Page.navigate", {"url": origin})
                     await wait_for("document.querySelectorAll('#pose-readings tr').length === 6")
+                    await wait_for("document.getElementById('operator-identity').textContent==='PUBLIC OPERATOR'")
                     self.assertTrue(await evaluate("""
                       document.querySelector('main').firstElementChild.matches('.intro') &&
                       document.querySelector('main').children[1].id === 'pairing-panel' &&
@@ -195,9 +223,22 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                       document.querySelector('.device-tag') === null &&
                       document.getElementById('pairing-panel').getBoundingClientRect().bottom <
                         document.querySelector('.utility-tabs').getBoundingClientRect().top &&
-                      document.querySelector('.camera-panel').offsetParent === null &&
-                      document.querySelector('.session-panel').offsetParent === null &&
-                      document.getElementById('pose-tab').getAttribute('aria-selected') === 'true'
+                      document.querySelector('.camera-panel').offsetParent !== null &&
+                      document.querySelector('.session-panel').offsetParent !== null &&
+                      document.getElementById('teleop-tab').getAttribute('aria-selected') === 'true' &&
+                      document.getElementById('pose-panel').hidden
+                    """))
+                    await evaluate("document.getElementById('pose-tab').click()")
+                    self.assertTrue(await evaluate("document.getElementById('teleop-panel').hidden"))
+                    await cdp("Page.reload")
+                    await wait_for("""document.querySelectorAll('#pose-readings tr').length === 6 &&
+                      document.getElementById('teleop-tab').getAttribute('aria-selected') === 'true'""")
+                    self.assertTrue(await evaluate("""
+                      !document.getElementById('teleop-panel').hidden &&
+                      document.getElementById('pose-panel').hidden &&
+                      document.getElementById('pose-tab').getAttribute('aria-selected') === 'false' &&
+                      document.getElementById('teleop-tab').tabIndex === 0 &&
+                      document.getElementById('pose-tab').tabIndex === -1
                     """))
                     self.assertTrue(await evaluate("document.getElementById('pose-start').disabled"))
                     self.assertIn("Pair the local controller", await evaluate(
@@ -219,6 +260,36 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                         "document.documentElement.dataset.theme",
                     ), "light")
                     await evaluate("document.getElementById('theme-toggle').click()")
+                    await evaluate("document.getElementById('teleop-tab').click()")
+                    await wait_for("document.getElementById('arm-canvas').width > 0")
+                    self.assertEqual(await evaluate(
+                        "document.getElementById('arm-canvas').dataset.state",
+                    ), "home")
+                    self.assertIn("HOME REFERENCE", await evaluate(
+                        "document.getElementById('model-empty').textContent",
+                    ))
+                    self.assertTrue(await evaluate("""[
+                      'J1 base yaw','J2 shoulder','J3 elbow','J4 wrist bend','J5 wrist roll','J6 gripper opening'
+                    ].every(joint=>document.getElementById('arm-canvas').getAttribute('aria-label').includes(joint))"""))
+                    await wait_for("""(() => {
+                      const canvas=document.getElementById('arm-canvas');
+                      const pixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+                      let orange=0;
+                      for(let i=0;i<pixels.length;i+=4) {
+                        if(pixels[i]>pixels[i+1]*1.3 && pixels[i]>pixels[i+2]*1.2 && pixels[i+3]) orange++;
+                      }
+                      return orange>100;
+                    })()""")
+                    self.assertIn(await evaluate(
+                        "document.getElementById('reading-value-0').textContent",
+                    ), ["—", "--"])
+                    if os.environ.get("CF_ROBOT_SCREENSHOT_DIR"):
+                        await evaluate("document.querySelector('.model-panel').scrollIntoView()")
+                        image = await cdp("Page.captureScreenshot", {"format": "png"})
+                        (Path(os.environ["CF_ROBOT_SCREENSHOT_DIR"]) / "measured-home-desktop.png").write_bytes(
+                            base64.b64decode(image["data"]),
+                        )
+                        await evaluate("window.scrollTo(0,0)")
                     await evaluate("""
                       document.getElementById('pose-tab').click();
                       document.getElementById('controller-origin').value=location.origin;
@@ -393,10 +464,38 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                       document.getElementById('pose-panel').hidden
                     """))
                     await evaluate("""
+                      window.testControl={...window.testControl,camera_live:true};
+                      window.testVideoMode='corrupt';
+                    """)
+                    await asyncio.sleep(1.8)
+                    self.assertTrue(await evaluate("document.getElementById('start-control').disabled"))
+                    self.assertFalse(await evaluate(
+                        "document.getElementById('camera-state').classList.contains('connected')",
+                    ))
+                    await evaluate("window.testVideoMode='live'")
+                    await wait_for("""(() => {
+                      const image=document.getElementById('camera-image');
+                      return image.complete && image.naturalWidth===64 && image.naturalHeight===48
+                        && document.getElementById('camera-state').classList.contains('connected')
+                        && !document.getElementById('start-control').disabled;
+                    })()""")
+                    previous_frame = await evaluate("document.getElementById('camera-image').src")
+                    await wait_for(
+                        f"document.getElementById('camera-image').src !== {json.dumps(previous_frame)}",
+                    )
+                    await evaluate("""
                       window.testControl={...window.testControl,running:true,state:'ready',
                         mode:'manual',leader_connected:true};
                       window.confirm=message=>{window.testModeConfirmation=message;return true;};
                     """)
+                    await wait_for("window.testVideoHeartbeats.some(item=>item.camera_live===true)")
+                    await evaluate("window.testVideoMode='corrupt'; window.testVideoHeartbeats=[]")
+                    await wait_for("window.testVideoHeartbeats.some(item=>item.camera_live===false)")
+                    self.assertFalse(await evaluate(
+                        "document.getElementById('camera-state').classList.contains('connected')",
+                    ))
+                    await evaluate("window.testVideoMode='live'; window.testVideoHeartbeats=[]")
+                    await wait_for("window.testVideoHeartbeats.some(item=>item.camera_live===true)")
                     await wait_for("!document.getElementById('leader-mode').disabled")
                     await evaluate("document.getElementById('leader-mode').click()")
                     await wait_for("document.getElementById('session-state').textContent === 'WAIT'")
@@ -414,6 +513,75 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(await evaluate(
                         "document.getElementById('session-detail').textContent",
                     ), "Ready for teleop")
+                    previous_frame = await evaluate("document.getElementById('camera-image').src")
+                    await wait_for(
+                        f"document.getElementById('camera-image').src !== {json.dumps(previous_frame)}",
+                    )
+                    self.assertTrue(await evaluate(
+                        "document.getElementById('camera-state').classList.contains('connected')",
+                    ))
+                    await evaluate("""
+                      window.testControl.follower_positions=Object.fromEntries(keys.map(key=>[key,0]));
+                      window.testControl.leader_positions=Object.fromEntries(keys.map(key=>[key,2]));
+                    """)
+                    await wait_for("document.getElementById('arm-canvas').dataset.state==='live'")
+                    self.assertEqual(await evaluate(
+                        "document.getElementById('reading-value-0').textContent",
+                    ), "0.0°")
+                    self.assertEqual(await evaluate(
+                        "document.getElementById('reading-delta-0').textContent",
+                    ), "+2.0°")
+                    await evaluate("window.measuredImage=document.getElementById('arm-canvas').toDataURL()")
+                    await evaluate("window.testControl.follower_positions['shoulder_pan.pos']=40")
+                    await wait_for(
+                        "document.getElementById('arm-canvas').toDataURL()!==window.measuredImage",
+                    )
+                    self.assertEqual(await evaluate(
+                        "document.getElementById('reading-value-0').textContent",
+                    ), "40.0°")
+                    for joint, value in (("wrist_roll.pos", 60), ("gripper.pos", 100)):
+                        await evaluate("window.measuredImage=document.getElementById('arm-canvas').toDataURL()")
+                        await evaluate(f"window.testControl.follower_positions[{json.dumps(joint)}]={value}")
+                        await wait_for(
+                            "document.getElementById('arm-canvas').toDataURL()!==window.measuredImage",
+                        )
+                    await evaluate("window.testControlSampleAge=5")
+                    await wait_for("document.getElementById('arm-canvas').dataset.state==='stale'")
+                    self.assertIn("NOT LIVE", await evaluate(
+                        "document.getElementById('model-empty').textContent",
+                    ))
+                    await evaluate("window.testControl.follower_positions['shoulder_pan.pos']=null")
+                    await wait_for("document.getElementById('arm-canvas').dataset.state==='home'")
+                    self.assertIn(await evaluate(
+                        "document.getElementById('reading-value-0').textContent",
+                    ), ["—", "--"])
+                    await evaluate("""
+                      window.testControlSampleAge=0;
+                      window.testControl.follower_positions['shoulder_pan.pos']=10;
+                    """)
+                    await wait_for("document.getElementById('arm-canvas').dataset.state==='live'")
+                    await evaluate("window.testControlOffline=true")
+                    await wait_for("document.getElementById('session-state').textContent==='OFFLINE'")
+                    self.assertEqual(await evaluate(
+                        "document.getElementById('arm-canvas').dataset.state",
+                    ), "home")
+                    await evaluate("""
+                      window.testControlOffline=false;
+                      window.testControl={...window.testControl,running:false,state:'idle'};
+                    """)
+                    await wait_for("document.getElementById('session-state').textContent==='IDLE'")
+                    self.assertEqual(await evaluate(
+                        "document.getElementById('arm-canvas').dataset.state",
+                    ), "home")
+                    self.assertTrue(await evaluate(
+                        "document.documentElement.scrollWidth <= innerWidth",
+                    ))
+                    if os.environ.get("CF_ROBOT_SCREENSHOT_DIR"):
+                        await evaluate("document.querySelector('.model-panel').scrollIntoView()")
+                        image = await cdp("Page.captureScreenshot", {"format": "png"})
+                        (Path(os.environ["CF_ROBOT_SCREENSHOT_DIR"]) / "measured-home-mobile.png").write_bytes(
+                            base64.b64decode(image["data"]),
+                        )
                     self.assertFalse([event for event in self.events
                                       if event.get("method") == "Runtime.exceptionThrown"])
                 chrome.terminate()
