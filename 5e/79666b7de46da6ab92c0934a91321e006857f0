@@ -1,0 +1,25 @@
+docs/follower-sweep.md
+  s_012961a8dc00a2::t_15b941394244e8 59-71,82-103,116-129
+src/cf_robot/sweep_client.py
+  s_012961a8dc00a2::t_0179c3a4478424 19-34,88-91,102-103,138-142,146-147,191,217-250,275-276,287,289-293,295,300-337,339-341,352-355
+tests/test_sweep_client.py
+  s_012961a8dc00a2::t_7fa1e5fdb68f58 6,11,76-78,137,139-140,143,146-152,200,208-291,297-337,379-394
+tests/test_sweep_load.py
+  s_012961a8dc00a2::t_d607fb58a3c776 1-136
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5e79666b7de46da6ab92c0934a91321e006857f0",
+  "prompts": {},
+  "sessions": {
+    "s_012961a8dc00a2": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "oxidized-fighter",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
