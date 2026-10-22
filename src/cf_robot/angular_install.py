@@ -115,12 +115,46 @@ class AngularInstall:
         }
         return self._make_plan(snapshot, joint_id, low, high, record)
 
-    def preview_limits(self, device, joint_id, low, high):
+    def preview_limits(
+        self, device, joint_id, low, high, *,
+        zero_ticks=None, reference_ticks=None, reference_degrees=None,
+    ):
         self.plan = None
         snapshot = self._snapshot(device, joint_id)
-        record = deepcopy(snapshot["profile"]["joints"].get(snapshot["name"]))
-        if not record:
-            raise ValueError("install angular references before changing limits with this tool")
+        if zero_ticks is not None and reference_ticks is None and reference_degrees is None:
+            resolution = device.bus.model_resolution_table["sts3215"]
+            record = {
+                "id": joint_id, "model": "sts3215",
+                "homing_offset": snapshot["live"][snapshot["name"]]["homing_offset"],
+                "zero_ticks": zero_ticks, "degrees_per_tick": 360 / resolution,
+                "encoder_resolution": resolution, "scale_source": "encoder_resolution",
+                "positive_direction": "increasing encoder ticks",
+                "reference_points": [{"ticks": zero_ticks, "degrees": 0}],
+            }
+        elif any(value is not None for value in (zero_ticks, reference_ticks, reference_degrees)):
+            if (
+                any(type(value) not in (int, float) or not math.isfinite(value)
+                    for value in (zero_ticks, reference_ticks, reference_degrees))
+                or type(reference_ticks) is not int or not low <= reference_ticks <= high
+                or reference_ticks == zero_ticks
+                or reference_degrees == 0 or abs(reference_degrees) > 360
+            ):
+                raise ValueError("provide a finite zero and a distinct, in-range nonzero angle reference")
+            scale = reference_degrees / (reference_ticks - zero_ticks)
+            record = {
+                "id": joint_id, "model": "sts3215",
+                "homing_offset": snapshot["live"][snapshot["name"]]["homing_offset"],
+                "zero_ticks": zero_ticks, "degrees_per_tick": scale,
+                "positive_direction": "increasing encoder ticks" if scale > 0 else "decreasing encoder ticks",
+                "reference_points": [
+                    {"ticks": zero_ticks, "degrees": 0},
+                    {"ticks": reference_ticks, "degrees": reference_degrees},
+                ],
+            }
+        else:
+            record = deepcopy(snapshot["profile"]["joints"].get(snapshot["name"]))
+            if not record:
+                raise ValueError("provide zero/reference arguments or install angular references first")
         if record["homing_offset"] != snapshot["live"][snapshot["name"]]["homing_offset"]:
             raise ValueError("angular references do not match the live offset; remeasure before writing")
         record.pop("range_min", None)
@@ -148,7 +182,15 @@ class AngularInstall:
         angles = [(raw - record["zero_ticks"]) * record["degrees_per_tick"] for raw in (low, high)]
         if max(abs(value) for value in angles) > 360:
             raise ValueError("hardware range produces unsupported angular limits")
-        if not low + 20 <= snapshot["raw"] <= high - 20:
+        live = snapshot["live"][name]
+        previous = snapshot["profile"]["joints"].get(name, {})
+        if previous.get("pending_range_max") is True:
+            if high == live["range_max"]:
+                record["pending_range_max"] = True
+            else:
+                record.pop("pending_range_max", None)
+        margins = (20 if low != live["range_min"] else 0, 20 if high != live["range_max"] else 0)
+        if not low + margins[0] <= snapshot["raw"] <= high - margins[1]:
             raise ValueError("with torque OFF, position the supported joint safely inside the new limits (20-tick margin)")
         if snapshot["lock"] not in (0, 1):
             raise ValueError("unexpected EEPROM lock state")
@@ -161,6 +203,7 @@ class AngularInstall:
         self.plan = {
             **snapshot, "joint_id": joint_id, "proposed_sdk": sdk,
             "proposed_profile": profile, "token": token, "created_at": time.monotonic(),
+            "margins": margins,
         }
         return {
             "joint_id": joint_id, "token": token, "expires_in_s": 60,
@@ -204,7 +247,7 @@ class AngularInstall:
         if abs(current["raw"] - plan["raw"]) > 20:
             raise ValueError("joint moved since preview; keep it still and preview again")
         proposed = plan["proposed_sdk"][plan["name"]]
-        if not proposed["range_min"] + 20 <= current["raw"] <= proposed["range_max"] - 20:
+        if not proposed["range_min"] + plan["margins"][0] <= current["raw"] <= proposed["range_max"] - plan["margins"][1]:
             raise ValueError("joint is no longer safely inside proposed limits; preview again")
         if stop.is_set():
             raise ValueError("angular installation cancelled before writing")
@@ -277,7 +320,7 @@ class AngularInstall:
             raw = int(bus.read("Present_Position", name, normalize=False, num_retry=2))
             if (
                 abs(raw - current["raw"]) > 20
-                or not hardware_after["range_min"] + 20 <= raw <= hardware_after["range_max"] - 20
+                or not hardware_after["range_min"] + plan["margins"][0] <= raw <= hardware_after["range_max"] - plan["margins"][1]
             ):
                 raise RuntimeError("joint position changed unexpectedly during limit update")
             # A failure between hardware and file updates is detected by the

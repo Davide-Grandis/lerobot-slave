@@ -155,8 +155,8 @@ def inspect_calibration(device, side, limits):
             # migration it aliases hardware bounds, not an editable extra range.
             item["working_range"] = angular_limits
             item["reference_ticks"] = angular["zero_ticks"]
-            item["reference_value"] = 0.0
-            item["converted_range"] = [
+            item["reference_value"] = None if angular["zero_ticks"] is None else 0.0
+            item["converted_range"] = None if angular["zero_ticks"] is None else [
                 (raw - angular["zero_ticks"]) * angular["degrees_per_tick"]
                 for raw in (angular_limits["min"], angular_limits["max"])
             ]

@@ -12,6 +12,14 @@ def _field(record, name):
     return record.get(name) if isinstance(record, dict) else getattr(record, name, None)
 
 
+def _pending_reason(record):
+    if record.get("pending_range_max") is True:
+        return "physical maximum is provisional; raw ticks only, no degree/goal control"
+    if record.get("pending_zero") is True:
+        return "physical zero is not yet recorded; raw ticks only, no degree control"
+    return None
+
+
 class AngularCalibration:
     """Overlay only configured degree conversions on one SDK bus instance."""
 
@@ -53,15 +61,19 @@ class AngularCalibration:
                 raise ValueError(f"incomplete legacy angular limits for {name}")
             low = record.get("range_min", _field(saved, "range_min"))
             high = record.get("range_max", _field(saved, "range_max"))
-            numbers = [low, high, record.get("zero_ticks"), record.get("degrees_per_tick")]
+            pending = record.get("pending_zero") is True
+            zero, scale = record.get("zero_ticks"), record.get("degrees_per_tick")
+            numbers = [low, high, scale] + ([] if pending else [zero])
             if any(type(value) not in (int, float) or not math.isfinite(value) for value in numbers):
                 raise ValueError(f"non-finite angular calibration for {name}")
-            low, high, zero, scale = numbers
             if (
                 type(low) is not int or type(high) is not int
                 or not 0 <= low < high <= 4095 or high - low <= 100
-                or not low <= zero <= high or not 0 < abs(scale) <= 1
-                or max(abs((low - zero) * scale), abs((high - zero) * scale)) > 360
+                or not 0 < abs(scale) <= 1
+                or (not pending and (
+                    not low <= zero <= high
+                    or max(abs((low - zero) * scale), abs((high - zero) * scale)) > 360
+                ))
             ):
                 raise ValueError(f"invalid angular range/scale for {name}")
             self.ids[motor.id] = name
@@ -114,13 +126,16 @@ class AngularCalibration:
                 self.limit_sources[name] = (
                     "hardware" if requested == self.hardware_limits[name] else "legacy_software"
                 )
-                self.errors[name] = None
+                self.errors[name] = _pending_reason(record)
             except Exception as exc:  # noqa: BLE001 - keep raw inspection available on SDK errors.
                 self.errors[name] = str(exc)
         return result
 
     def _verified(self, name):
         self._check_saved(name)
+        pending = _pending_reason(self.records[name])
+        if pending:
+            raise ValueError(f"{name}: {pending}")
         if self.errors[name]:
             raise ValueError(f"{name} angular calibration: {self.errors[name]}")
         return self.records[name]
@@ -182,6 +197,7 @@ class AngularCalibration:
             error = str(exc)
         return {
             **record, "file": str(self.path), "sha256": self.sha256,
+            "zero_ticks": record.get("zero_ticks"),
             "state": "warning" if error else "verified", "error": error,
             "limits": dict(self.limits[name]),
             "hardware_limits": self.hardware_limits.get(name),

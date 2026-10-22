@@ -7,6 +7,7 @@ import time
 from cf_robot.calibration_inspection import inspect_calibration
 from cf_robot.calibration_restore import GripperCalibrationRestore
 from cf_robot.angular_install import AngularInstall
+from cf_robot.encoder_rebase import EncoderRebase
 from cf_robot.hardware import make_follower, make_leader
 from cf_robot.protocol import JOINTS
 from cf_robot.servo_maintenance import HOME_SPEED, read_servo_limits
@@ -82,6 +83,29 @@ def validate_pose_command(message):
         raise ValueError("command_id must be a positive integer")
     joint_id = message.get("joint_id")
     mode = message.get("mode")
+    if mode in ("rebase_preview", "rebase_apply"):
+        if type(joint_id) is not int or not 1 <= joint_id <= 5:
+            raise ValueError("encoder rebasing supports follower J1-J5 only")
+        keys = {"version", "type", "command_id", "joint_id", "mode"}
+        if mode == "rebase_preview":
+            fields = {"old_start", "new_start", "expected_offset"}
+            endpoint = {"old_end"} if "old_end" in message else {"provisional_max"}
+            if (
+                set(message) != keys | fields | endpoint
+                or any(type(message.get(key)) is not int for key in fields | endpoint)
+                or not all(0 <= message[key] <= 4095 for key in (fields | endpoint) - {"expected_offset"})
+                or not -2047 <= message["expected_offset"] <= 2047
+            ):
+                raise ValueError("rebase preview requires integer old/new start, expected offset and old end or provisional maximum")
+        elif (
+            set(message) != keys | {"token", "confirmation"}
+            or message.get("confirmation") != f"REBASE FOLLOWER J{joint_id}"
+            or not isinstance(message.get("token"), str)
+            or len(message["token"]) != 32
+            or any(character not in "0123456789abcdef" for character in message["token"])
+        ):
+            raise ValueError("rebase apply requires a matching preview and explicit joint confirmation")
+        return dict(message)
     if mode in ("angular_preview", "angular_apply"):
         if type(joint_id) is not int or not 1 <= joint_id <= 5:
             raise ValueError("angular profiles support follower J1-J5 only; J6 is unchanged")
@@ -411,6 +435,7 @@ def stream_follower_pose(
         calibration = inspect_calibration(follower, "follower", limits)
         restore = GripperCalibrationRestore()
         angular = AngularInstall()
+        rebase = EncoderRebase("follower")
         previous = None
         while not stop.is_set():
             if commands is not None:
@@ -423,7 +448,39 @@ def stream_follower_pose(
                         command_busy.set()
                     try:
                         mode = command["mode"]
-                        if mode == "angular_preview":
+                        if mode not in ("rebase_preview", "rebase_apply"):
+                            rebase.plan = None
+                        if mode == "rebase_preview":
+                            angular.plan = None
+                            restore.plan = None
+                            if restore.tainted:
+                                raise ValueError("resolve the incomplete J6 restore before rebasing")
+                            preview = rebase.preview(
+                                follower, command["joint_id"], command["old_start"],
+                                command.get("old_end"), command["new_start"],
+                                command["expected_offset"],
+                                provisional_max=command.get("provisional_max"),
+                            )
+                            _publish_command_result(
+                                publish, command, "preview",
+                                message="Read-only homing-offset/MIN/MAX rebase preview; zero stays pending.",
+                                rebase_preview=preview,
+                            )
+                        elif mode == "rebase_apply":
+                            angular.plan = None
+                            restore.plan = None
+                            try:
+                                if not rebase.plan or rebase.plan["joint_id"] != command["joint_id"]:
+                                    raise ValueError("no matching unused encoder-rebase preview")
+                                result = rebase.apply(follower, command["token"], stop)
+                                _publish_command_result(
+                                    publish, command, "succeeded",
+                                    message="Encoder rebase verified; torque stays OFF. Restart for raw measurements.",
+                                    encoder_rebase=result,
+                                )
+                            finally:
+                                stop.set()
+                        elif mode == "angular_preview":
                             restore.plan = None
                             if restore.tainted:
                                 raise ValueError("resolve the incomplete J6 restore before installing angular files")
