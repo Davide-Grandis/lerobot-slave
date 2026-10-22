@@ -32,6 +32,7 @@ cf-robot-system = "cf_robot.system_client:main"
 cf-robot-follower-calibrate = "cf_robot.calibration_client:main"
 cf-robot-follower-limits = "cf_robot.servo_client:limits_main"
 cf-robot-follower-home = "cf_robot.servo_client:home_main"
+cf-robot-follower-sweep = "cf_robot.sweep_client:main"
 cf-robot-pose-compare = "cf_robot.pose_compare_client:main"
 cf-robot-leader-limits = "cf_robot.leader_limits:main"
 

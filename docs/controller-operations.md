@@ -101,6 +101,16 @@ speed. They require torque enabled on that joint; use `TE` explicitly first.
 `TD` may let a joint drop, so support it. `J* TD` releases all six joints. The
 leader remains read-only; these commands affect only the follower.
 
+Updated monitor moves retain the selected joint's reduced speed cap, preserving
+an already lower nonzero speed. They do not restore zero/unrestricted speed
+after reaching the settling tolerance. Timeout/cancellation holds the measured
+position without releasing torque; an unverified hold is reported as a failure.
+
+For an interactive J1-J6 MIN-to-MAX sweep with separately confirmed torque
+release, manual positioning and return to physical zero, see
+[Follower Joint Sweeps](follower-sweep.md). This requires the updated Pi service;
+the sweep CLI refuses older services before issuing torque or movement commands.
+
 ### Servo limits and SDK-style home
 
 Read the follower's configured servo limit registers over WSS:

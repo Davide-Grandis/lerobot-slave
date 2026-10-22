@@ -21,7 +21,10 @@ import uvicorn
 from cf_robot.control import FollowerSession
 from cf_robot.gripper_control import GripperFollower
 from cf_robot.hardware import make_camera, make_follower
-from cf_robot.protocol import HOLD_CAPABILITY, JOINTS, VERSION, WRIST_GRIPPER_JOINTS, validate_command
+from cf_robot.protocol import (
+    HOLD_CAPABILITY, JOINTS, SAFE_MONITOR_MOVES_CAPABILITY, VERSION,
+    WRIST_GRIPPER_JOINTS, validate_command,
+)
 from cf_robot.pose_monitor import stream_follower_pose, validate_pose_command
 from cf_robot.servo_maintenance import (
     calculate_home_positions,
@@ -751,6 +754,7 @@ def create_app(port, arm_id, camera_device=None, width=640, height=480, video_fp
                     "type": "monitor_started",
                     "version": VERSION,
                     "interval_s": 0.1,
+                    "capabilities": [SAFE_MONITOR_MOVES_CAPABILITY],
                 }
             )
             receive_task = asyncio.create_task(ws.receive_text())

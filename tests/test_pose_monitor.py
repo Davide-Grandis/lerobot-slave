@@ -286,7 +286,7 @@ class PoseMonitorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_pose_command("J6 D10", 8)
 
-    def test_manual_joint_command_uses_one_joint_and_restores_speed(self):
+    def test_manual_joint_command_uses_one_joint_and_keeps_reduced_speed(self):
         robot = FakeArm()
         limits = read_servo_limits(robot.bus)
         results = []
@@ -308,6 +308,7 @@ class PoseMonitorTests(unittest.TestCase):
             )
         self.assertEqual(results[-1]["state"], "succeeded")
         self.assertEqual(robot.bus.present["shoulder_pan"], 2010)
+        self.assertEqual(robot.bus.speeds["shoulder_pan"], 102)
         position_writes = [
             write for write in robot.bus.writes if write[0][0] == "Goal_Position"
         ]

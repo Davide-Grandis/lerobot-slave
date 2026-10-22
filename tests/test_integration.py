@@ -22,7 +22,7 @@ try:
 except ImportError:
     TestClient = None
 
-from cf_robot.protocol import HOLD_CAPABILITY, JOINTS, action_message, hold_message
+from cf_robot.protocol import HOLD_CAPABILITY, JOINTS, SAFE_MONITOR_MOVES_CAPABILITY, action_message, hold_message
 from test_control import FakeFollower, wait_for
 
 
@@ -307,6 +307,7 @@ class OriginTests(unittest.TestCase):
                     )
                     started = socket.receive_json()
                     self.assertEqual(started["type"], "monitor_started")
+                    self.assertIn(SAFE_MONITOR_MOVES_CAPABILITY, started["capabilities"])
                     sample = socket.receive_json()
                     self.assertEqual(sample["type"], "pose_sample")
                     self.assertEqual(sample["side"], "follower")

@@ -17,6 +17,7 @@ WRIST_GRIPPER_JOINTS = ("wrist_roll.pos", "gripper.pos")
 MAX_AGE_S = 0.5
 MAX_FUTURE_S = 0.25
 HOLD_CAPABILITY = "hold-current-position"
+SAFE_MONITOR_MOVES_CAPABILITY = "safe-monitor-moves-v1"
 
 
 class ProtocolError(ValueError):

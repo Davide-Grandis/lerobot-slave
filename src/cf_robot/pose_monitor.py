@@ -338,6 +338,29 @@ def execute_pose_command(device, limits, command, stop, report):
     delta = target_units - current_units
     steps = max(1, math.ceil(abs(delta) / MAX_COMMAND_STEP_UNITS))
     previous_speed = int(bus.read("Goal_Velocity", motor, normalize=False, num_retry=2))
+    if not 0 <= previous_speed <= 32767:
+        raise ValueError(f"follower {joint} has an invalid speed register")
+    # Zero is unrestricted speed. Retain the cap even after accepting a goal
+    # within tolerance, while the servo may still be physically settling.
+    movement_speed = min(previous_speed or HOME_SPEED, HOME_SPEED)
+    speed_capped = False
+    hold_attempted = False
+
+    def hold_current():
+        nonlocal hold_attempted
+        hold_attempted = True
+        try:
+            raw = int(bus.read("Present_Position", motor, normalize=False, num_retry=2))
+            if not limit["min"] <= raw <= limit["max"]:
+                raise ValueError("measured position is outside verified limits")
+            bus.write("Goal_Position", motor, raw, normalize=False, num_retry=0)
+            return raw
+        except Exception as exc:
+            raise RuntimeError(
+                f"follower {joint} safe hold failed: {exc}; keep the arm supported "
+                "and use the physical stop if necessary. Torque was not released."
+            ) from exc
+
     report(
         {
             "type": "command_progress",
@@ -351,15 +374,11 @@ def execute_pose_command(device, limits, command, stop, report):
         }
     )
     try:
-        bus.write("Goal_Velocity", motor, HOME_SPEED, normalize=False, num_retry=2)
+        bus.write("Goal_Velocity", motor, movement_speed, normalize=False, num_retry=2)
+        speed_capped = True
         for index in range(1, steps + 1):
             if stop.is_set():
-                present_raw = int(
-                    bus.read("Present_Position", motor, normalize=False, num_retry=2)
-                )
-                bus.write(
-                    "Goal_Position", motor, present_raw, normalize=False, num_retry=1
-                )
+                present_raw = hold_current()
                 _publish_command_result(
                     report,
                     command,
@@ -379,9 +398,7 @@ def execute_pose_command(device, limits, command, stop, report):
                     bus.read("Present_Position", motor, normalize=True, num_retry=2)
                 )
                 if stop.is_set():
-                    bus.write(
-                        "Goal_Position", motor, present_raw, normalize=False, num_retry=1
-                    )
+                    present_raw = hold_current()
                     _publish_command_result(
                         report,
                         command,
@@ -395,13 +412,21 @@ def execute_pose_command(device, limits, command, stop, report):
                     break
                 time.sleep(0.05)
             else:
+                held_raw = hold_current()
                 _publish_command_result(
                     report,
                     command,
                     "failed",
-                    message=f"{joint} did not reach an intermediate target",
+                    message=(
+                        f"follower {joint} did not reach an intermediate target; "
+                        "holding measured position at reduced speed"
+                    ),
                     current=present_units,
                     target=target_units,
+                    actual_raw=present_raw,
+                    step_target_raw=step_raw,
+                    held_raw=held_raw,
+                    speed=movement_speed,
                 )
                 return
             report(_sample(device, "follower", limits))
@@ -421,6 +446,8 @@ def execute_pose_command(device, limits, command, stop, report):
 
         present_units = float(bus.read("Present_Position", motor, normalize=True, num_retry=2))
         state = "cancelled" if stop.is_set() else "succeeded"
+        if state == "cancelled":
+            hold_current()
         _publish_command_result(
             report,
             command,
@@ -429,8 +456,10 @@ def execute_pose_command(device, limits, command, stop, report):
             current=present_units,
             target=target_units,
         )
-    finally:
-        bus.write("Goal_Velocity", motor, previous_speed, normalize=False, num_retry=1)
+    except Exception:
+        if speed_capped and not hold_attempted:
+            hold_current()
+        raise
 
 
 def stream_leader_pose(port, arm_id, stop, publish):
