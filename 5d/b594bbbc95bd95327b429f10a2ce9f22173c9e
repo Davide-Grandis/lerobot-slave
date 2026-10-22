@@ -1,0 +1,93 @@
+docs/operator-app.md
+  s_e0296a8a153f47::t_4283628999961d 124-130,134-147,151-155
+src/cf_robot/operator/app.css
+  s_e0296a8a153f47::t_1bf1122e1df69a 49,55-59,66,77-78,84,87,98-99,104-110,120,134-135,180-182,258,267,269,271-272
+tests/test_monitor_move_safety.py
+  s_a729b965397193::t_8509a4d8a1a8b0 127-227
+tests/test_web_pose_ui.py
+  s_e0296a8a153f47::t_22e48405270cf7 35-36,38-42,70-88,96-103,127-128,131,133-138,144-147,192-194,262,264-272,279-284,288-291,304-309,311,364,532,555-608,708-764
+README.md
+  s_c1f122357bd2f7::t_f0f5b18ae09e74 824-827
+docs/angular-calibration.md
+  s_c1f122357bd2f7::t_3325244c7cd892 145-245
+docs/controller-operations.md
+  s_c1f122357bd2f7::t_8f48389c5de052 109-119
+docs/follower-sweep.md
+  s_c1f122357bd2f7::t_32dd500be6e44c 59-71,82-103,116-129
+docs/servo-diagnostics.md
+  s_c1f122357bd2f7::t_5d889d2b249cc6 34-52,71-84
+docs/teleoperation.md
+  s_c1f122357bd2f7::t_398b9db8869738 32-37
+src/cf_robot/leader.py
+  s_c1f122357bd2f7::t_060314badd3a18 28,74
+src/cf_robot/leader_limits.py
+  s_c1f122357bd2f7::t_2480f30347c6a0 1,21-26,39-43
+src/cf_robot/operator/app.js
+  s_c1f122357bd2f7::t_5e957a998c2717 4,12,23-25,34-35,37-38,96,105,110-112,150-168,251,257,277-278,296,304,320,325,338,347,351,357-365,377,382-384,389,391-393,409-410,417,422-425,441,443,445-496,543,674-675,691-696
+src/cf_robot/operator/calibration.js
+  s_c1f122357bd2f7::t_6130d788fe905d 224-227
+src/cf_robot/operator/index.html
+  s_c1f122357bd2f7::t_d1465b9bfadf8a 7,14-21,24,37,56,65,82,84,88-96,103,109,246
+src/cf_robot/operator/pose-monitor.js
+  s_c1f122357bd2f7::t_b9af081cf12dab 273-277
+src/cf_robot/pose_compare_client.py
+  s_c1f122357bd2f7::t_306a439e2c7739 13,118-122,124,220-248,273-287,295,299,309-313,490,604-606,647
+src/cf_robot/pose_monitor.py
+  s_c1f122357bd2f7::t_1c4fe3e1b82149 18-27,39,43-63,369-376,411,417-432,434,436-461,463-468,473,475-479,481,484-494,496-499,501-505,507-510
+src/cf_robot/sweep_client.py
+  s_c1f122357bd2f7::t_5626bf549281a5 19-34,88-91,102-103,138-142,146-147,191,217-250,275-276,287,289-293,295,300-337,339-341,352-355
+src/cf_robot/system_client.py
+  s_c1f122357bd2f7::t_76209cd378ca59 11,93-103
+src/cf_robot/teleop_hardware.py
+  s_c1f122357bd2f7::t_b3487761febf37 22,27,29-32,50,59,74-76,89,133,139,146,151,188,203
+src/cf_robot/web.py
+  s_c1f122357bd2f7::t_98593410c9dade 196,203,353-376
+tests/test_cli_inspection.py
+  s_c1f122357bd2f7::t_529173f79b6262 20-22,55-117,143-207
+tests/test_leader.py
+  s_c1f122357bd2f7::t_12e2681cfa6d50 11,19-40
+tests/test_leader_limits.py
+  s_c1f122357bd2f7::t_cccc6ca1f62c9c 162-266
+tests/test_sweep_client.py
+  s_c1f122357bd2f7::t_e017f99bee5cb2 6,11,76-78,137,139-140,143,146-152,200,208-291,297-337,379-394
+tests/test_sweep_load.py
+  s_c1f122357bd2f7::t_1a09905ccacc87 1-101
+tests/test_system_commands.py
+  s_c1f122357bd2f7::t_c80c7dc1d8968d 16-18,227-257
+tests/test_teleop_shared.py
+  s_c1f122357bd2f7::t_73c0b8e5f8fbc2 152-196
+tests/test_web_video.py
+  s_c1f122357bd2f7::t_756d10b1456688 19,22,26,150-181
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5db594bbbc95bd95327b429f10a2ce9f22173c9e",
+  "prompts": {},
+  "sessions": {
+    "s_a729b965397193": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "sapphire-wrist",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    },
+    "s_c1f122357bd2f7": {
+      "agent_id": {
+        "tool": "devin",
+        "id": "s_c1f122357bd2f7",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    },
+    "s_e0296a8a153f47": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "sandy-freighter",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
