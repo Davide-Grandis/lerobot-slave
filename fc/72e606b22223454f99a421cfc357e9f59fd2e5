@@ -1,0 +1,25 @@
+docs/servo-diagnostics.md
+  s_012961a8dc00a2::t_0217c4fd790957 1-53
+src/cf_robot/pose_compare_client.py
+  s_012961a8dc00a2::t_4cf8e50fa863d7 75-80,201,442,558
+src/cf_robot/pose_monitor.py
+  s_012961a8dc00a2::t_c648622294b24b 20-53,120-126,561-569
+tests/test_servo_diagnostics.py
+  s_012961a8dc00a2::t_5ec6d7a718442f 1-86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fc72e606b22223454f99a421cfc357e9f59fd2e5",
+  "prompts": {},
+  "sessions": {
+    "s_012961a8dc00a2": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "oxidized-fighter",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
