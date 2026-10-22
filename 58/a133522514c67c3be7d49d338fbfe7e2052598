@@ -1,0 +1,33 @@
+docs/follower-encoder-rebase.md
+  s_012961a8dc00a2::t_036e498fc92017 1-58
+src/cf_robot/angular_calibration.py
+  s_012961a8dc00a2::t_3fc50638a99259 15-22,64-66,72-76,129,136-138,200
+src/cf_robot/angular_install.py
+  s_012961a8dc00a2::t_416b293b233127 118-121,124-157,185-193,206,250,323
+src/cf_robot/calibration_inspection.py
+  s_012961a8dc00a2::t_58b1e446fd4981 158-159
+src/cf_robot/encoder_rebase.py
+  s_012961a8dc00a2::t_eab7624415fca4 1-216
+src/cf_robot/pose_monitor.py
+  s_012961a8dc00a2::t_fe454d693e2242 10,86-108,438,451-483
+tests/test_encoder_rebase.py
+  s_012961a8dc00a2::t_81deaeaaac4f91 1-207
+tests/test_follower_rebase.py
+  s_012961a8dc00a2::t_334c4e5098cb16 1-149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "58a133522514c67c3be7d49d338fbfe7e2052598",
+  "prompts": {},
+  "sessions": {
+    "s_012961a8dc00a2": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "oxidized-fighter",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
