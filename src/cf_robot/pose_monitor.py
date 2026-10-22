@@ -17,6 +17,40 @@ MAX_COMMAND_STEP_UNITS = 2.5
 COMMAND_SETTLE_TOLERANCE = 1.0
 COMMAND_SETTLE_TIMEOUT_S = 5.0
 MOTORS = tuple(joint.removesuffix(".pos") for joint in JOINTS)
+DIAGNOSTIC_REGISTERS = (
+    "Present_Position", "Goal_Position", "Goal_Position_2",
+    "Torque_Enable", "Goal_Velocity", "Present_Velocity", "Acceleration",
+    "Present_Load", "Present_Current", "Present_Voltage", "Present_Temperature",
+    "Status", "Moving", "Torque_Limit", "Max_Torque_Limit", "Protective_Torque",
+    "P_Coefficient", "I_Coefficient", "D_Coefficient",
+    "Minimum_Startup_Force", "CW_Dead_Zone", "CCW_Dead_Zone",
+    "Operating_Mode", "Homing_Offset", "Min_Position_Limit", "Max_Position_Limit",
+    "Min_Voltage_Limit", "Max_Voltage_Limit", "Max_Temperature_Limit",
+    "Unloading_Condition", "Overload_Torque", "Protection_Current",
+)
+
+
+def read_servo_diagnostics(device, joint_id):
+    """Read a fixed STS3215 register snapshot without writes or normalization."""
+    if type(joint_id) is not int or not 1 <= joint_id <= 6:
+        raise ValueError("select one follower joint J1-J6")
+    motor = MOTORS[joint_id - 1]
+    configured = device.bus.motors[motor]
+    if configured.id != joint_id or configured.model != "sts3215":
+        raise ValueError("diagnostics require the configured STS3215 joint identity")
+    values, errors = {}, {}
+    for register in DIAGNOSTIC_REGISTERS:
+        try:
+            values[register] = int(device.bus.read(
+                register, motor, normalize=False, num_retry=0,
+            ))
+        except Exception as exc:  # SDK/firmware-specific failures stay explicit.
+            errors[register] = str(exc)
+    return {
+        "side": "follower", "joint_id": joint_id, "motor": motor,
+        "sampled_at": time.time(), "units": "raw register values",
+        "registers": values, "errors": errors,
+    }
 
 
 def _sample(device, side, limits, calibration=None, previous=None):
@@ -83,6 +117,13 @@ def validate_pose_command(message):
         raise ValueError("command_id must be a positive integer")
     joint_id = message.get("joint_id")
     mode = message.get("mode")
+    if mode == "diagnostics":
+        if (
+            type(joint_id) is not int or not 1 <= joint_id <= 6
+            or set(message) != {"version", "type", "command_id", "joint_id", "mode"}
+        ):
+            raise ValueError("read-only diagnostics require exactly one follower joint J1-J6")
+        return dict(message)
     if mode in ("rebase_preview", "rebase_apply"):
         if type(joint_id) is not int or not 1 <= joint_id <= 5:
             raise ValueError("encoder rebasing supports follower J1-J5 only")
@@ -516,6 +557,15 @@ def stream_follower_pose(
                                 publish, command, "succeeded",
                                 message="J6 saved calibration restored and verified. Torque remains OFF; J1-J5 unchanged.",
                                 calibration_restore=result,
+                            )
+                        elif mode == "diagnostics":
+                            angular.plan = None
+                            restore.plan = None
+                            snapshot = read_servo_diagnostics(follower, command["joint_id"])
+                            _publish_command_result(
+                                publish, command, "succeeded",
+                                message="Read-only follower servo snapshot; unavailable registers appear in errors.",
+                                servo_diagnostics=snapshot,
                             )
                         else:
                             angular.plan = None

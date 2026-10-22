@@ -72,6 +72,12 @@ def parse_pose_command(line, command_id):
         return {"kind": "help"}
     if text.lower() in ("q", "quit", "exit"):
         return {"kind": "stop"}
+    match = re.fullmatch(r"J([1-6])\s+STATUS", text, re.IGNORECASE)
+    if match:
+        return {"kind": "command", "message": {
+            "version": VERSION, "type": "command", "command_id": command_id,
+            "joint_id": int(match[1]), "mode": "diagnostics",
+        }}
     match = re.fullmatch(
         r"J([1-5])\s+ANGULAR\s+PREVIEW\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)",
         text, re.IGNORECASE,
@@ -192,7 +198,7 @@ def parse_pose_command(line, command_id):
         }
 
     raise ValueError(
-        "use INSPECT L/F, SAVE L/F <path>, J1-J6 T<ticks>, J1-J5 D<degrees>, "
+        "use INSPECT L/F, SAVE L/F <path>, J1-J6 STATUS, J1-J6 T<ticks>, J1-J5 D<degrees>, "
         "J6 %<0-100>, or J1-J6/J* TE/TD"
     )
 
@@ -433,6 +439,7 @@ def _render(build_version, leader_sample, follower_sample, command_buffer="", st
     print("TE holds present position; TD releases torque and may drop the joint.")
     print("INSPECT L/F (reprinted on exit); SAVE L/F <path> (JSON, no overwrite)")
     print("CAPTURE L/F J<n> <known value> <tolerance> <pose label>")
+    print("J1-J6 STATUS (read-only follower goals, speed, load, power, faults and controller settings)")
     print("J6 RESTORE PREVIEW; then J6 RESTORE CONFIRM (J6 torque must be OFF)")
     print("J1-J5 ANGULAR PREVIEW <MIN> <MAX> <-90 ticks> <+90 ticks>; then J<n> ANGULAR CONFIRM")
     print("CAPTURE confirms an independently measured physical pose; it never moves an arm.")
@@ -548,6 +555,7 @@ async def monitor_poses(url, port, arm_id, build_version):
                             )
                         if message.get("mode") in (
                             "calibration_preview", "calibration_restore", "angular_preview", "angular_apply",
+                            "diagnostics",
                         ):
                             inspections.retain_restore(message)
                             status_message = json.dumps(message, indent=2)
