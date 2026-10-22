@@ -1,0 +1,39 @@
+docs/controller-operations.md
+  s_012961a8dc00a2::t_425c4fd9a7ca06 104-113
+docs/follower-sweep.md
+  s_012961a8dc00a2::t_705385da390cd5 1-86
+pyproject.toml
+  s_012961a8dc00a2::t_5953d6ec47c4c8 35
+src/cf_robot/follower.py
+  s_012961a8dc00a2::t_9736b3d825ea79 24-27,757
+src/cf_robot/pose_monitor.py
+  s_012961a8dc00a2::t_ace218840b2b51 341-363,377-378,381,401,415,420-423,426-429,449-450,459-462
+src/cf_robot/protocol.py
+  s_012961a8dc00a2::t_af4a36d77611ee 20
+src/cf_robot/sweep_client.py
+  s_012961a8dc00a2::t_15e150ac7e32de 1-287
+tests/test_integration.py
+  s_012961a8dc00a2::t_7f03ae9bcfde6d 25,310
+tests/test_monitor_move_safety.py
+  s_012961a8dc00a2::t_2f3ff6b1020e1f 1-126
+tests/test_pose_monitor.py
+  s_012961a8dc00a2::t_364f366901e81e 289,311
+tests/test_sweep_client.py
+  s_012961a8dc00a2::t_e130f9b31eebb2 1-241
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a54b84a8f174f13ac147e779a57fa9a653e03ccb",
+  "prompts": {},
+  "sessions": {
+    "s_012961a8dc00a2": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "oxidized-fighter",
+        "model": "unknown"
+      },
+      "human_author": "davideg <davideg@cloudflare.com>"
+    }
+  }
+}
