@@ -77,6 +77,41 @@ class LoadTelemetryTests(unittest.TestCase):
         self.assertIn("unavailable", load_description({}))
         self.assertNotIn("0 raw", load_description({}))
 
+    def test_load_reports_continue_while_waiting_on_a_stalled_step(self):
+        robot = FakeArm()
+        bus = robot.bus
+        original = bus.read
+        messages = []
+
+        def read(register, motor, **kwargs):
+            if register == "Present_Load":
+                return 750
+            return original(register, motor, **kwargs)
+
+        def write(register, motor, value, **kwargs):
+            bus.writes.append(((register, motor, value), kwargs))
+            if register == "Goal_Velocity":
+                bus.speeds[motor] = value
+
+        clock = itertools.count(step=0.05)
+        with patch.object(bus, "read", side_effect=read), patch.object(
+            bus, "write", side_effect=write,
+        ), patch("cf_robot.pose_monitor.time.monotonic", side_effect=lambda: next(clock)), patch(
+            "cf_robot.pose_monitor.time.sleep",
+        ):
+            execute_pose_command(
+                robot, read_servo_limits(bus),
+                {"version": 1, "type": "command", "command_id": 1,
+                 "joint_id": 3, "mode": "ticks", "value": 2900},
+                threading.Event(), messages.append,
+            )
+        progress = [m for m in messages if m.get("type") == "command_progress"]
+        self.assertGreater(len(progress), 2)
+        self.assertTrue(all(m["present_load_raw"] == 750 for m in progress))
+        self.assertEqual(messages[-1]["state"], "failed")
+        self.assertEqual(messages[-1]["present_load_raw"], 750)
+        self.assertEqual(bus.writes[-1][0], ("Goal_Position", "elbow_flex", 2000))
+
 
 class SweepLoadOutputTests(unittest.IsolatedAsyncioTestCase):
     async def test_live_progress_output_contains_load(self):
