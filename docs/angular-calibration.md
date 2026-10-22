@@ -142,6 +142,107 @@ independently fitted zero/scale. The hardware limits apply regardless of client.
 Updating the code or saving the original software-only profile does not itself
 program hardware: only the explicit confirmation does.
 
+## Wrapped Leader J3 Encoder Range
+
+The measured increasing J3 range 3939..4095, then 0..2046 spans 2203 counts.
+Moving its start to 500 requires a +657-count coordinate shift and gives
+hardware limits 500..2703. With the verified original offset 965, the new
+homing offset is 308 (`Present_Position = Actual_Position - Homing_Offset`,
+with encoder rollover accounted for). No physical rotation is commanded.
+
+The explicit leader-only tool is:
+
+```sh
+python -m cf_robot.encoder_rebase \
+  --port /dev/tty.usbmodemYOUR_LEADER_DEVICE --arm-id so101_leader \
+  --joint 3 --old-start 3939 --old-end 2046 --new-start 500 \
+  --expected-offset 965
+```
+
+Close other arm clients first. Secure/support the elbow; torque must already
+be OFF. The projected position must be at least 20 ticks inside the new bounds.
+Review the preview and type `REBASE LEADER J3` only to authorise those selected
+offset/MIN/MAX writes. Original files and live calibration are backed up.
+The operation verifies projected position, EEPROM readback, original lock state
+and unchanged other joints before saving matching files. Uncertain writes are
+not retried or rolled back. `--expected-offset` prevents blindly applying the
+same shift twice after an interrupted operation.
+
+Physical angular zero is intentionally left pending. ARMS MONITOR shows J3 raw
+ticks in the new coordinate system, but its degree value is blank and degree/
+goal commands are blocked for that joint. Other calibrated joints still work.
+Manually position J3 at the independently identified 0-degree pose and report
+its new raw ticks. Do not assume the range midpoint is physical zero.
+
+That zero can subsequently be saved with the limit tool's `--zero-ticks`
+argument. If hardware limits already match, it updates only reference files,
+without repeating EEPROM writes. File-only zero registration can be performed
+at an endpoint. A limit-only update requires a 20-tick margin at each boundary
+being changed; an untouched opposite boundary does not require moving the
+unpowered joint away from it. Homing/encoder rebases still require clearance
+from both new boundaries because they change the entire coordinate system.
+
+## Leader J2 With A Provisional Maximum
+
+For measured old minimum 2043, new minimum 500 needs a -1543-count shift.
+The verified original homing offset -806 becomes 737. Until the other physical
+endpoint is measured, an explicitly requested new maximum of 4095 can be stored
+as provisional:
+
+```sh
+python -m cf_robot.encoder_rebase \
+  --port /dev/tty.usbmodemYOUR_LEADER_DEVICE --arm-id so101_leader \
+  --joint 2 --old-start 2043 --new-start 500 --provisional-max 4095 \
+  --expected-offset -806
+```
+
+The tool uses a signed coordinate shift; blindly using the equivalent +2553
+would exceed the supported homing-offset register range. The same torque-OFF,
+position-margin, one-use preview, backups and readback checks apply. Other
+joints are not changed.
+
+4095 is a temporary register ceiling, not a verified physical endpoint. Both
+`pending_zero` and `pending_range_max` are persisted. Raw measurements remain
+available, but degree and raw goal commands remain blocked for J2. Saving zero
+alone does not clear a provisional maximum. Keep the joint supported and
+unpowered while manually measuring actual maximum and zero; do not force it
+to a numeric target or use it in teleoperation yet.
+
+## Leader J4 With A Zero And One Known Angle
+
+Leader J4's measured bounds are 80..2360, with zero at 1220 ticks and -90
+degrees at 200 ticks. These give:
+
+```text
+degrees_per_tick = 360 / 4096
+degrees = (ticks - 1220) * 360 / 4096
+angular range: approximately -100.20 .. +100.20 degrees
+```
+
+The 4096-count encoder ratio is fixed, not fitted to manually identified angles.
+At 200 ticks this model gives -89.648 degrees, close to the measured -90 pose.
+No +90-degree measurement is invented. Zero-only installation records the
+measured zero and the encoder-resolution scale. Existing J5 and J6
+references/settings are preserved. The optional additional reference arguments
+remain available for explicitly fitted calibrations, but are not needed here.
+
+Stop monitoring/teleoperation, secure/support the wrist bend and ensure leader
+J4 torque is already OFF. With J4 at least 20 ticks inside its proposed bounds:
+
+```sh
+python -m cf_robot.leader_limits \
+  --port /dev/tty.usbmodemYOUR_LEADER_DEVICE --arm-id so101_leader \
+  --joint 4 --min 80 --max 2360 \
+  --zero-ticks 1220
+```
+
+Review the read-only preview, then type `APPLY J4 LIMITS` only after checking it.
+If the existing limits are still 80..2364, only Max needs an EEPROM write.
+Min is already correct and is not rewritten. The live homing offset, torque and
+goals remain unchanged. The SDK file mirrors verified hardware and the angular
+file stores the measured zero and fixed encoder scale, not another range.
+This updates leader J4 only, not follower J4.
+
 ## Follower J5 And Isolated Testing
 
 The follower has its own references: usable ticks 130..3946, -90 degrees at

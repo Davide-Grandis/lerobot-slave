@@ -15,7 +15,16 @@ from cf_robot.servo_maintenance import HOME_SPEED, read_servo_limits
 POSE_MONITOR_INTERVAL_S = 0.1
 MAX_COMMAND_STEP_UNITS = 2.5
 COMMAND_SETTLE_TOLERANCE = 1.0
-COMMAND_SETTLE_TIMEOUT_S = 5.0
+COMMAND_CYCLE_S = 0.05
+COMMAND_REPORT_INTERVAL_S = 0.25
+# Moves end on lack of measured progress, not on elapsed travel time.
+COMMAND_NO_PROGRESS_TIMEOUT_S = 3.0
+COMMAND_MIN_PROGRESS_TICKS = 3
+COMMAND_MAX_DURATION_S = 120.0
+STALL_DIAGNOSTIC_REGISTERS = (
+    "Present_Load", "Present_Current", "Present_Voltage", "Present_Temperature",
+    "Status", "Moving", "Torque_Limit", "Goal_Velocity", "Acceleration",
+)
 MOTORS = tuple(joint.removesuffix(".pos") for joint in JOINTS)
 DIAGNOSTIC_REGISTERS = (
     "Present_Position", "Goal_Position", "Goal_Position_2",
@@ -27,7 +36,29 @@ DIAGNOSTIC_REGISTERS = (
     "Operating_Mode", "Homing_Offset", "Min_Position_Limit", "Max_Position_Limit",
     "Min_Voltage_Limit", "Max_Voltage_Limit", "Max_Temperature_Limit",
     "Unloading_Condition", "Overload_Torque", "Protection_Current",
+    "Protection_Time", "Over_Current_Protection_Time",
 )
+
+
+def _load_fields(value):
+    if type(value) is int:
+        return {
+            "present_load_raw": value,
+            "present_load_percent": round(value / 10, 1),
+        }
+    return {
+        "present_load_raw": None, "present_load_percent": None,
+        "present_load_error": str(value),
+    }
+
+
+def read_present_load(bus, motor):
+    """Read the SDK-decoded signed load; this is not a calibrated torque sensor."""
+    try:
+        value = int(bus.read("Present_Load", motor, normalize=False, num_retry=0))
+    except Exception as exc:
+        value = f"unavailable: {exc}"
+    return _load_fields(value)
 
 
 def read_servo_diagnostics(device, joint_id):
@@ -335,8 +366,14 @@ def execute_pose_command(device, limits, command, stop, report):
     unit = "percent" if command["joint_id"] == 6 else "degrees"
     current_raw = int(bus.read("Present_Position", motor, normalize=False, num_retry=2))
     current_units = float(bus.read("Present_Position", motor, normalize=True, num_retry=2))
-    delta = target_units - current_units
-    steps = max(1, math.ceil(abs(delta) / MAX_COMMAND_STEP_UNITS))
+    probe_raw = target_raw + (100 if target_raw + 100 <= limit["max"] else -100)
+    units_per_tick = abs(float(bus._normalize({motor_id: probe_raw})[motor_id]) - target_units) / 100
+    if not math.isfinite(units_per_tick) or units_per_tick <= 0:
+        raise ValueError(f"follower {joint} conversion has no usable tick scale")
+    # Bound each goal by physical units (degrees, or J6 percentage points).
+    step_ticks = max(1, int(MAX_COMMAND_STEP_UNITS / units_per_tick))
+    tolerance_ticks = max(2, round(COMMAND_SETTLE_TOLERANCE / units_per_tick))
+    steps = max(1, math.ceil(abs(target_raw - current_raw) / step_ticks))
     previous_speed = int(bus.read("Goal_Velocity", motor, normalize=False, num_retry=2))
     if not 0 <= previous_speed <= 32767:
         raise ValueError(f"follower {joint} has an invalid speed register")
@@ -371,90 +408,106 @@ def execute_pose_command(device, limits, command, stop, report):
             "target": target_units,
             "unit": unit,
             "steps": steps,
+            **read_present_load(bus, motor),
         }
     )
     try:
         bus.write("Goal_Velocity", motor, movement_speed, normalize=False, num_retry=2)
         speed_capped = True
-        for index in range(1, steps + 1):
-            if stop.is_set():
-                present_raw = hold_current()
-                _publish_command_result(
-                    report,
-                    command,
-                    "cancelled",
-                    current=float(bus.read("Present_Position", motor, normalize=True, num_retry=2)),
-                    target=target_units,
-                )
-                return
-            step_raw = math.floor(current_raw + (target_raw - current_raw) * index / steps + 0.5)
-            bus.write("Goal_Position", motor, step_raw, normalize=False, num_retry=2)
-            deadline = time.monotonic() + COMMAND_SETTLE_TIMEOUT_S
-            while time.monotonic() < deadline:
-                present_raw = int(
-                    bus.read("Present_Position", motor, normalize=False, num_retry=2)
-                )
-                present_units = float(
-                    bus.read("Present_Position", motor, normalize=True, num_retry=2)
-                )
-                if stop.is_set():
-                    present_raw = hold_current()
-                    _publish_command_result(
-                        report,
-                        command,
-                        "cancelled",
-                        current=present_units,
-                        target=target_units,
-                    )
-                    return
-                step_units = float(bus._normalize({motor_id: step_raw})[motor_id])
-                if abs(present_units - step_units) <= COMMAND_SETTLE_TOLERANCE:
-                    break
-                time.sleep(0.05)
-            else:
-                held_raw = hold_current()
-                _publish_command_result(
-                    report,
-                    command,
-                    "failed",
-                    message=(
-                        f"follower {joint} did not reach an intermediate target; "
-                        "holding measured position at reduced speed"
-                    ),
-                    current=present_units,
-                    target=target_units,
-                    actual_raw=present_raw,
-                    step_target_raw=step_raw,
-                    held_raw=held_raw,
-                    speed=movement_speed,
-                )
-                return
-            report(_sample(device, "follower", limits))
-            report(
-                {
-                    "type": "command_progress",
-                    "command_id": command["command_id"],
-                    "joint_id": command["joint_id"],
-                    "state": "moving",
-                    "current": present_units,
-                    "target": target_units,
-                    "unit": unit,
-                    "step": index,
-                    "steps": steps,
-                }
+
+        def units(raw):
+            return float(bus._normalize({motor_id: raw})[motor_id])
+
+        def cancelled():
+            held_raw = hold_current()
+            _publish_command_result(
+                report, command, "cancelled", message="positioning cancelled",
+                current=units(held_raw), target=target_units, held_raw=held_raw,
+                **read_present_load(bus, motor),
             )
 
-        present_units = float(bus.read("Present_Position", motor, normalize=True, num_retry=2))
-        state = "cancelled" if stop.is_set() else "succeeded"
-        if state == "cancelled":
-            hold_current()
+        started = progress_at = last_report = time.monotonic()
+        best_remaining = abs(target_raw - current_raw)
+        goal_raw = None
+        while True:
+            if stop.is_set():
+                cancelled()
+                return
+            present_raw = int(bus.read("Present_Position", motor, normalize=False, num_retry=2))
+            remaining = target_raw - present_raw
+            if goal_raw == target_raw and abs(remaining) <= tolerance_ticks:
+                break
+            now = time.monotonic()
+            if abs(remaining) <= best_remaining - COMMAND_MIN_PROGRESS_TICKS:
+                best_remaining, progress_at = abs(remaining), now
+            stalled = now - progress_at >= COMMAND_NO_PROGRESS_TIMEOUT_S
+            if stalled or now - started >= COMMAND_MAX_DURATION_S:
+                snapshot = {}
+                for register in STALL_DIAGNOSTIC_REGISTERS:
+                    try:
+                        snapshot[register] = int(bus.read(register, motor, normalize=False, num_retry=0))
+                    except Exception as exc:  # Firmware-specific registers stay explicit.
+                        snapshot[register] = f"unavailable: {exc}"
+                details = {
+                    "current": units(present_raw), "target": target_units,
+                    "actual_raw": present_raw, "step_target_raw": goal_raw,
+                    "residual_ticks": remaining, "tolerance_ticks": tolerance_ticks,
+                    "speed": movement_speed, "elapsed_s": round(now - started, 2),
+                    "servo_snapshot": snapshot,
+                    **_load_fields(snapshot.get("Present_Load", "unavailable")),
+                }
+                if goal_raw == target_raw and abs(remaining) <= step_ticks:
+                    # Load/friction steady-state error: keep pushing toward the
+                    # target, which is already within one bounded step.
+                    _publish_command_result(
+                        report, command, "settled_short",
+                        message=(
+                            f"follower {joint} stopped {abs(remaining)} ticks short of the target "
+                            "(likely load or friction); target goal retained"
+                        ),
+                        **details,
+                    )
+                    return
+                held_raw = hold_current()
+                _publish_command_result(
+                    report, command, "failed",
+                    message=(
+                        f"follower {joint} made no measured progress for "
+                        f"{COMMAND_NO_PROGRESS_TIMEOUT_S:g}s; holding measured position. "
+                        "Check servo_snapshot load/status/voltage and for obstruction."
+                        if stalled else
+                        f"follower {joint} exceeded {COMMAND_MAX_DURATION_S:g}s; holding measured position"
+                    ),
+                    held_raw=held_raw, **details,
+                )
+                return
+            next_goal = present_raw + max(-step_ticks, min(step_ticks, remaining))
+            if next_goal != goal_raw:
+                bus.write("Goal_Position", motor, next_goal, normalize=False, num_retry=2)
+                goal_raw = next_goal
+            if now - last_report >= COMMAND_REPORT_INTERVAL_S:
+                report(_sample(device, "follower", limits))
+                report({
+                    "type": "command_progress", "command_id": command["command_id"],
+                    "joint_id": command["joint_id"], "state": "moving",
+                    "current": units(present_raw), "target": target_units, "unit": unit,
+                    "remaining_ticks": remaining, "elapsed_s": round(now - started, 2),
+                    "steps": steps,
+                    **read_present_load(bus, motor),
+                })
+                last_report = now
+            time.sleep(COMMAND_CYCLE_S)
+
+        report(_sample(device, "follower", limits))
+        if stop.is_set():
+            cancelled()
+            return
+        present_raw = int(bus.read("Present_Position", motor, normalize=False, num_retry=2))
         _publish_command_result(
-            report,
-            command,
-            state,
-            message="position reached" if state == "succeeded" else "positioning cancelled",
-            current=present_units,
-            target=target_units,
+            report, command, "succeeded", message="position reached",
+            current=units(present_raw), target=target_units,
+            actual_raw=present_raw, elapsed_s=round(time.monotonic() - started, 2),
+            **read_present_load(bus, motor),
         )
     except Exception:
         if speed_capped and not hold_attempted:

@@ -13,6 +13,9 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from websockets.datastructures import Headers
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 from test_control import FakeFollower
 
 from cf_robot.follower import create_app
@@ -221,6 +224,37 @@ class SystemCommandTests(unittest.TestCase):
 
 
 class SystemClientTests(unittest.TestCase):
+    def test_http_530_reports_command_not_sent_without_retry(self):
+        failure = InvalidStatus(Response(530, "Cloudflare error", Headers()))
+        with (
+            patch("sys.argv", [
+                "cf-robot-system", "shutdown", "--yes", "--url", "wss://robot.example.com/control",
+            ]),
+            patch("cf_robot.system_client.request_command", new=AsyncMock(side_effect=failure)) as request,
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+            self.assertRaises(SystemExit),
+        ):
+            main()
+        self.assertIn("NOT SENT", stderr.getvalue())
+        self.assertIn("530", stderr.getvalue())
+        self.assertIn("Tunnel", stderr.getvalue())
+        request.assert_awaited_once()
+
+    def test_uncertain_timeout_does_not_claim_power_command_was_unsent(self):
+        with (
+            patch("sys.argv", [
+                "cf-robot-system", "shutdown", "--yes", "--url", "wss://robot.example.com/control",
+            ]),
+            patch("cf_robot.system_client.request_command", new=AsyncMock(side_effect=TimeoutError("reply lost"))),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+            self.assertRaises(SystemExit),
+        ):
+            main()
+        self.assertNotIn("NOT SENT", stderr.getvalue())
+        self.assertIn("do not retry power commands blindly", stderr.getvalue())
+
     def test_url_requires_wss_and_preserves_control_hostname(self):
         self.assertEqual(system_url("wss://robot.example.com/control"), "wss://robot.example.com/system")
         for url in (

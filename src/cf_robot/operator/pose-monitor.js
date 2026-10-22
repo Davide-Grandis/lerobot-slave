@@ -270,7 +270,11 @@ export function createPoseMonitor({ request, paired, controlStatus, onChange }) 
       }
     } else {
       online = false;
-      updateControls();
+      status = { ...status, state: "idle", running: false, leader: null, follower: null, command_pending: false };
+      restorePreview = null;
+      restoreExpires = 0;
+      restoreCommandId = null;
+      render();
     }
     window.setTimeout(poll, 200);
   }

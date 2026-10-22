@@ -106,6 +106,17 @@ an already lower nonzero speed. They do not restore zero/unrestricted speed
 after reaching the settling tolerance. Timeout/cancellation holds the measured
 position without releasing torque; an unverified hold is reported as a failure.
 
+Moves follow the measured position: each goal is at most 2.5 units (degrees,
+or J6 percentage points) ahead of the joint, and there is no per-step deadline.
+A slow but moving joint keeps going. The move stops only after 3 seconds with
+no measured progress (or 120 seconds in total). If the joint stalls within one
+step of the target, typically under gravity or friction, the result is
+`settled_short` with `residual_ticks`; the target goal is retained. A stall
+further away is `failed` and holds the measured position. Both include a
+read-only `servo_snapshot` (load, current, voltage, temperature, status,
+torque limit, speed, acceleration) for diagnosis. These changes run on the Pi,
+so update the Pi service.
+
 For an interactive J1-J6 MIN-to-MAX sweep with separately confirmed torque
 release, manual positioning and return to physical zero, see
 [Follower Joint Sweeps](follower-sweep.md). This requires the updated Pi service;

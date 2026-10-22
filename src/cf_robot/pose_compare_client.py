@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import termios
 import threading
 import time
@@ -114,8 +115,13 @@ def parse_pose_command(line, command_id):
         return {"kind": "inspect", "side": "leader" if match[1].upper() == "L" else "follower"}
     if text.upper().startswith("SAVE "):
         parts = shlex.split(text)
+        if len(parts) == 3 and re.fullmatch(r"J[1-6]", parts[1], re.IGNORECASE):
+            return {
+                "kind": "save_diagnostics", "joint_id": int(parts[1][1]),
+                "path": parts[2],
+            }
         if len(parts) != 3 or parts[1].upper() not in ("L", "F"):
-            raise ValueError("use SAVE L/F <path>; quote paths containing spaces")
+            raise ValueError("use SAVE L/F/J1-J6 <path>; quote paths containing spaces")
         return {
             "kind": "save_inspection",
             "side": "leader" if parts[1].upper() == "L" else "follower",
@@ -211,6 +217,35 @@ class InspectionReports:
         self.restore_reports = {}
         self.restore_token = None
         self.angular_token = None
+        self.diagnostics = {}
+        self.diagnostic_paths = {}
+
+    def retain_diagnostics(self, message):
+        self.restore_token = None
+        self.angular_token = None
+        joint_id = message["joint_id"]
+        self.diagnostics[joint_id] = json.dumps(message, indent=2)
+        self.diagnostic_paths.pop(joint_id, None)
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", prefix=f"follower-j{joint_id}-status-",
+                suffix=".json", delete=False,
+            ) as output:
+                output.write(self.diagnostics[joint_id] + "\n")
+            self.diagnostic_paths[joint_id] = Path(output.name)
+            saved = f"Saved JSON: {output.name}"
+        except OSError as exc:
+            saved = f"Could not auto-save STATUS: {exc}"
+        snapshot = message["servo_diagnostics"]
+        registers = snapshot.get("registers", {})
+        return (
+            f"Follower J{joint_id} STATUS: raw={registers.get('Present_Position', '--')}, "
+            f"goal={registers.get('Goal_Position', '--')}, "
+            f"torque={registers.get('Torque_Enable', '--')}; "
+            f"read errors={len(snapshot.get('errors', {}))}.\n"
+            f"{saved}\n"
+            f"Full report retained: SAVE J{joint_id} <path> to export JSON; q to print on exit."
+        )
 
     def retain_restore(self, message):
         self.restore_reports[message["mode"]] = json.dumps(message, indent=2)
@@ -235,13 +270,21 @@ class InspectionReports:
         return parse_pose_command(f"J6 RESTORE CONFIRM {token}", command_id)["message"]
 
     def command(self, command, samples):
-        side = command["side"]
-        report = (samples.get(side) or {}).get("calibration")
-        if not report:
-            return f"{side.capitalize()} inspection unavailable; start monitoring that arm."
-        content = json.dumps(report, indent=2)
-        self.reports[side] = content
-        if command["kind"] == "save_inspection":
+        if command["kind"] == "save_diagnostics":
+            joint_id = command["joint_id"]
+            content = self.diagnostics.get(joint_id)
+            if content is None:
+                return f"No follower J{joint_id} report retained; request J{joint_id} STATUS first."
+            label = f"follower J{joint_id} STATUS"
+        else:
+            side = command["side"]
+            report = (samples.get(side) or {}).get("calibration")
+            if not report:
+                return f"{side.capitalize()} inspection unavailable; start monitoring that arm."
+            content = json.dumps(report, indent=2)
+            self.reports[side] = content
+            label = f"{side} inspection"
+        if command["kind"] in ("save_inspection", "save_diagnostics"):
             path = Path(command["path"]).expanduser()
             try:
                 # Exclusive creation protects previous exports from accidental overwrite.
@@ -249,11 +292,11 @@ class InspectionReports:
                     output.write(content + "\n")
             except OSError as exc:
                 return f"Could not save inspection: {exc}"
-            return f"Saved {side} inspection to {path.resolve()}"
+            return f"Saved {label} to {path.resolve()}"
         return content
 
     def print_on_exit(self):
-        if not self.reports and not self.restore_reports:
+        if not self.reports and not self.restore_reports and not self.diagnostics:
             return
         print("\n" + "=" * 72)
         print("INSPECTION REPORTS -- retained after monitor exit; safe to copy")
@@ -262,6 +305,11 @@ class InspectionReports:
             print(content)
         for mode, content in self.restore_reports.items():
             print(f"\nJ{json.loads(content).get('joint_id', 6)} {mode.upper()}")
+            print(content)
+        for joint_id, content in sorted(self.diagnostics.items()):
+            print(f"\nFOLLOWER J{joint_id} STATUS")
+            if joint_id in self.diagnostic_paths:
+                print(f"Saved JSON: {self.diagnostic_paths[joint_id]}")
             print(content)
         print("=" * 72)
         sys.stdout.flush()
@@ -439,7 +487,7 @@ def _render(build_version, leader_sample, follower_sample, command_buffer="", st
     print("TE holds present position; TD releases torque and may drop the joint.")
     print("INSPECT L/F (reprinted on exit); SAVE L/F <path> (JSON, no overwrite)")
     print("CAPTURE L/F J<n> <known value> <tolerance> <pose label>")
-    print("J1-J6 STATUS (read-only follower goals, speed, load, power, faults and controller settings)")
+    print("J1-J6 STATUS (read-only); SAVE J<n> <path> exports the retained report; q prints it on exit")
     print("J6 RESTORE PREVIEW; then J6 RESTORE CONFIRM (J6 torque must be OFF)")
     print("J1-J5 ANGULAR PREVIEW <MIN> <MAX> <-90 ticks> <+90 ticks>; then J<n> ANGULAR CONFIRM")
     print("CAPTURE confirms an independently measured physical pose; it never moves an arm.")
@@ -553,9 +601,10 @@ async def monitor_poses(url, port, arm_id, build_version):
                                 f" ({message.get('current', 0):.2f} -> "
                                 f"{message.get('target', 0):.2f} {message.get('unit', '')})"
                             )
-                        if message.get("mode") in (
+                        if message.get("servo_diagnostics") and message_type == "command_result":
+                            status_message = inspections.retain_diagnostics(message)
+                        elif message.get("mode") in (
                             "calibration_preview", "calibration_restore", "angular_preview", "angular_apply",
-                            "diagnostics",
                         ):
                             inspections.retain_restore(message)
                             status_message = json.dumps(message, indent=2)
@@ -595,7 +644,7 @@ async def monitor_poses(url, port, arm_id, build_version):
                                 stop_sent = True
                                 stop.set()
                                 status_message = "Stopping monitor..."
-                            elif parsed["kind"] in ("inspect", "save_inspection"):
+                            elif parsed["kind"] in ("inspect", "save_inspection", "save_diagnostics"):
                                 status_message = inspections.command(
                                     parsed, {"leader": leader_sample, "follower": follower_sample},
                                 )

@@ -1,6 +1,7 @@
 import { HOME_POSE, JOINTS, alignmentDelta, createArmViewer, forwardKinematics } from "./arm-viewer.js";
 import { createPoseMonitor } from "./pose-monitor.js";
 
+const savedCameraRotation = Number(localStorage.getItem("cf-robot-video-rotation"));
 const state = {
   controllerBase: localStorage.getItem("cf-robot-controller-origin")
     || (["localhost", "127.0.0.1"].includes(location.hostname) && location.port === "8080"
@@ -8,6 +9,7 @@ const state = {
       : "http://127.0.0.1:8080"),
   pairingCode: "",
   paired: false,
+  requestController: null,
   agent: null,
   robotId: "so101-main",
   sessionId: null,
@@ -18,6 +20,9 @@ const state = {
   videoTimer: null,
   frameUrl: null,
   lastFrameAt: null,
+  cameraRotation: [0, 90, 180, 270].includes(savedCameraRotation) ? savedCameraRotation : 0,
+  cameraWidth: 0,
+  cameraHeight: 0,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -26,11 +31,11 @@ const elements = {
   pairingOrigin: $("controller-origin"),
   pairingCode: $("pairing-code"),
   pairingStatus: $("pairing-status"),
-  connectionStrip: $("connection-strip"),
-  connectionIndicator: $("connection-indicator"),
-  connectionLabel: $("connection-label"),
-  connectionMeta: $("connection-meta"),
+  pairController: $("pair-controller"),
+  disconnectController: $("disconnect-controller"),
   cameraImage: $("camera-image"),
+  cameraFrame: $("camera-frame"),
+  cameraRotate: $("camera-rotate"),
   cameraPlaceholder: $("camera-placeholder"),
   cameraMessage: $("camera-message"),
   cameraState: $("camera-state"),
@@ -38,7 +43,6 @@ const elements = {
   cameraAge: $("camera-age"),
   sessionState: $("session-state"),
   sessionDetail: $("session-detail"),
-  followerConnection: $("follower-connection"),
   leaderConnection: $("leader-connection"),
   alignmentState: $("alignment-state"),
   start: $("start-control"),
@@ -89,6 +93,7 @@ function bridgeHeaders() {
 
 async function agentRequest(path, options = {}) {
   if (!state.paired) throw new Error("Pair the local controller first.");
+  const controller = state.requestController;
   const response = await fetch(`${state.controllerBase}${path}`, {
     cache: "no-store",
     ...options,
@@ -97,10 +102,14 @@ async function agentRequest(path, options = {}) {
       ...(options.body ? { "Content-Type": "application/json" } : {}),
       ...options.headers,
     },
+    signal: controller.signal,
   });
   const payload = response.headers.get("content-type")?.includes("application/json")
     ? await response.json()
     : null;
+  if (!state.paired || controller !== state.requestController) {
+    throw new DOMException("Controller disconnected.", "AbortError");
+  }
   if (!response.ok) throw new Error(payload?.detail || payload?.error || `Controller returned HTTP ${response.status}.`);
   return payload;
 }
@@ -126,11 +135,6 @@ function announce(text, tone = "") {
   elements.pairingStatus.dataset.tone = tone;
 }
 
-function showConnection(text, connected = false) {
-  elements.connectionLabel.textContent = text;
-  elements.connectionStrip.classList.toggle("connected", connected);
-}
-
 function setCameraLive(live, message = "") {
   elements.cameraState.classList.toggle("connected", live);
   elements.cameraState.lastElementChild.textContent = live ? "Live" : "Waiting";
@@ -140,8 +144,26 @@ function setCameraLive(live, message = "") {
   elements.cameraClock.textContent = live ? "LIVE / 10 HZ" : "NO SIGNAL";
   if (!live) {
     elements.cameraAge.textContent = "—";
-    if (!$("teleop-panel").hidden) showConnection("CAMERA FEED REQUIRED BEFORE MOTION", false);
   }
+}
+
+function updateCameraRotation() {
+  const angle = state.cameraRotation;
+  elements.cameraFrame.dataset.rotation = String(angle);
+  elements.cameraImage.style.setProperty("--camera-rotation", `${angle}deg`);
+  elements.cameraRotate.title = `Rotate clockwise by 90 degrees (current orientation: ${angle} degrees)`;
+  elements.cameraRotate.setAttribute("aria-label", elements.cameraRotate.title);
+  const quarterTurn = angle % 180 !== 0;
+  if (state.cameraWidth && state.cameraHeight) {
+    elements.cameraFrame.style.aspectRatio = quarterTurn
+      ? `${state.cameraHeight} / ${state.cameraWidth}`
+      : `${state.cameraWidth} / ${state.cameraHeight}`;
+  }
+  const { width, height } = elements.cameraFrame.getBoundingClientRect();
+  if (!width || !height) return;
+  // Swap the contain box for quarter turns so portrait and landscape feeds both fit.
+  elements.cameraImage.style.width = `${quarterTurn ? height : width}px`;
+  elements.cameraImage.style.height = `${quarterTurn ? width : height}px`;
 }
 
 function updateTheme() {
@@ -226,13 +248,13 @@ function renderMeasurements(status) {
 }
 
 function updateButtons(status) {
-  const connected = Boolean(status.running && status.state === "ready");
+  const connected = Boolean(state.paired && status.running && status.state === "ready");
   const cameraLive = Boolean(status.camera_live);
   const browserCameraLive = state.lastFrameAt !== null && Date.now() - state.lastFrameAt <= 1500;
   const stopped = Boolean(status.estop_latched);
   elements.start.disabled = !state.paired || !cameraLive || !browserCameraLive || status.running || stopped || Boolean(poseMonitor?.running);
   elements.stop.disabled = !status.running;
-  elements.estop.disabled = status.running || poseMonitor?.running ? stopped : !stopped;
+  elements.estop.disabled = !state.paired || (status.running || poseMonitor?.running ? stopped : !stopped);
   elements.estop.textContent = stopped ? "↻  RE-ARM / INSPECT" : "■   SOFTWARE STOP";
   elements.leaderConnect.disabled = !connected || status.leader_connected || state.manualBusy;
   elements.leaderDisconnect.disabled = !connected || !status.leader_connected || state.manualBusy;
@@ -252,10 +274,8 @@ function updateButtons(status) {
         ? "Leader streaming is active. Monitor the measured follower pose and camera."
         : "Manual mode is active. Each on-screen jog sends one bounded target."
       : cameraLive
-        ? "Camera is live. Connect the follower when the workspace is clear."
-        : "Camera must be live before a control session can connect.");
-  elements.followerConnection.textContent = connected || ["synchronizing", "waiting_feedback"].includes(status.state)
-    ? "CONNECTED" : status.running ? "CONNECTING" : "OFFLINE";
+        ? "Camera is live. Start teleoperation through the local controller when the workspace is clear."
+        : "Live follower video is required before starting teleoperation.");
   elements.leaderConnection.textContent = status.leader_connected ? "CONNECTED" : "NOT CONNECTED";
   elements.alignmentState.textContent = !status.leader_connected
     ? "NOT CHECKED"
@@ -269,21 +289,11 @@ function updateButtons(status) {
   } else {
     elements.feedbackAge.textContent = "—";
   }
-  const monitoring = $("teleop-panel").hidden;
-  showConnection(
-    stopped ? "SOFTWARE STOP LATCHED — INSPECT BEFORE RE-ARM"
-      : status.running ? "CONTROL SESSION OPEN"
-        : !state.paired ? "CONNECT THE LOCAL CONTROLLER"
-          : !state.agent ? "LOCAL CONTROLLER OFFLINE"
-            : monitoring ? poseMonitor?.running ? "POSE MONITOR ACTIVE" : "CONTROLLER PAIRED / MONITOR DISARMED"
-              : cameraLive ? "CAMERA READY / CONTROL DISARMED" : "WAITING FOR CAMERA",
-    !stopped && (monitoring ? Boolean(state.agent) : cameraLive),
-  );
   if (stopped) {
     elements.start.textContent = "Re-arm required";
     elements.start.disabled = true;
   } else {
-    elements.start.innerHTML = 'Connect follower <span>↗</span>';
+    elements.start.innerHTML = 'Start teleoperation <span>↗</span>';
   }
   if (status.error) elements.pairingStatus.textContent = status.error;
   renderMeasurements(status);
@@ -291,6 +301,7 @@ function updateButtons(status) {
 
 async function pollStatus() {
   if (!state.paired) return;
+  const controller = state.requestController;
   const requestedAt = performance.now();
   try {
     const status = await agentRequest("/api/status");
@@ -306,10 +317,12 @@ async function pollStatus() {
     if (!status.running && state.sessionId) {
       await recordSessionEnd(status.state === "error" ? "error" : "stopped");
     }
+    if (!state.paired || controller !== state.requestController) return;
     const frameAt = status.camera_received_at ? Number(status.camera_received_at) * 1000 : null;
     elements.cameraAge.textContent = frameAt ? `${Math.max(0, Math.round(Date.now() - frameAt))} ms old` : "—";
     if (!status.camera_live) setCameraLive(false, status.camera_error || "Camera unavailable. Control remains disarmed.");
   } catch (error) {
+    if (!state.paired || controller !== state.requestController) return;
     state.agent = null;
     renderMeasurements({});
     setCameraLive(false, "Controller or camera unavailable. Check the local bridge.");
@@ -317,12 +330,12 @@ async function pollStatus() {
     elements.sessionDetail.textContent = error.message;
     elements.start.disabled = true;
     elements.stop.disabled = true;
-    showConnection("LOCAL CONTROLLER OFFLINE", false);
   }
 }
 
 async function pollFrame() {
   if (!state.paired) return;
+  const controller = state.requestController;
   if ($("teleop-panel").hidden && !state.agent?.running) {
     state.videoTimer = window.setTimeout(pollFrame, 300);
     return;
@@ -331,14 +344,25 @@ async function pollFrame() {
     const response = await fetch(`${state.controllerBase}/api/video/frame`, {
       cache: "no-store",
       headers: bridgeHeaders(),
+      signal: controller.signal,
     });
     if (!response.ok) throw new Error("camera frame unavailable");
     const blob = await response.blob();
+    if (!state.paired || controller !== state.requestController) return;
     const nextUrl = URL.createObjectURL(blob);
     try {
       const frame = new Image();
       frame.src = nextUrl;
       await frame.decode();
+      if (!state.paired || controller !== state.requestController) {
+        URL.revokeObjectURL(nextUrl);
+        return;
+      }
+      if (state.cameraWidth !== frame.naturalWidth || state.cameraHeight !== frame.naturalHeight) {
+        state.cameraWidth = frame.naturalWidth;
+        state.cameraHeight = frame.naturalHeight;
+        updateCameraRotation();
+      }
     } catch (error) {
       URL.revokeObjectURL(nextUrl);
       throw error;
@@ -349,19 +373,24 @@ async function pollFrame() {
     elements.cameraImage.src = nextUrl;
     elements.cameraAge.textContent = "LIVE";
     setCameraLive(true);
-    if (!state.agent?.running) showConnection("CAMERA READY / CONTROL DISARMED", true);
   } catch {
+    if (!state.paired || controller !== state.requestController) return;
     if (state.lastFrameAt === null || Date.now() - state.lastFrameAt > 1500) {
       setCameraLive(false, "Waiting for follower camera frames…");
     }
   } finally {
-    state.videoTimer = window.setTimeout(pollFrame, 100);
+    if (state.paired && controller === state.requestController) {
+      state.videoTimer = window.setTimeout(pollFrame, 100);
+    }
   }
 }
 
 async function pollLoop() {
+  const controller = state.requestController;
   await pollStatus();
-  state.pollTimer = window.setTimeout(pollLoop, 100);
+  if (state.paired && controller === state.requestController) {
+    state.pollTimer = window.setTimeout(pollLoop, 100);
+  }
 }
 
 async function heartbeat() {
@@ -377,19 +406,23 @@ async function heartbeat() {
 
 async function connectWorkerMetadata() {
   try {
-    const operator = await workerRequest("/api/me");
-    elements.identity.textContent = operator.name || "PUBLIC OPERATOR";
+    await workerRequest("/api/me");
+    elements.identity.textContent = "OPERATOR";
     const { robots } = await workerRequest("/api/robots");
     const robot = robots?.[0];
     if (robot) {
       state.robotId = robot.id;
     }
   } catch {
-    elements.identity.textContent = "LOCAL OPERATOR";
+    elements.identity.textContent = "OPERATOR";
   }
 }
 
 async function pairController() {
+  if (state.paired) return;
+  const controller = new AbortController();
+  state.requestController = controller;
+  elements.pairController.disabled = true;
   try {
     state.controllerBase = localControllerUrl();
     state.pairingCode = elements.pairingCode.value.trim();
@@ -402,13 +435,65 @@ async function pairController() {
     elements.pairingPanel.classList.add("paired");
     const monitoring = $("teleop-panel").hidden;
     announce(monitoring ? "Controller paired. Ready to monitor." : "Controller paired. Opening camera…", "success");
-    showConnection(monitoring ? "CONTROLLER PAIRED / MONITOR DISARMED" : "CONTROLLER PAIRED / WARMING CAMERA", monitoring);
     if (!state.pollTimer) pollLoop();
     if (!state.videoTimer) pollFrame();
   } catch (error) {
+    if (controller !== state.requestController) return;
     state.paired = false;
+    controller.abort();
     announce(error.message, "error");
-    showConnection("CONTROLLER PAIRING REQUIRED", false);
+  } finally {
+    if (controller === state.requestController) elements.pairController.disabled = false;
+  }
+}
+
+async function disconnectController() {
+  if (!state.paired) return;
+  const base = state.controllerBase;
+  const headers = bridgeHeaders();
+  state.paired = false;
+  state.requestController.abort();
+  state.requestController = null;
+  window.clearTimeout(state.pollTimer);
+  window.clearTimeout(state.videoTimer);
+  state.pollTimer = null;
+  state.videoTimer = null;
+  void recordSessionEnd("stopped");
+  state.agent = null;
+  state.mode = "manual";
+  state.pairingCode = "";
+  elements.pairingCode.value = "";
+  state.lastFrameAt = null;
+  state.cameraWidth = 0;
+  state.cameraHeight = 0;
+  if (state.frameUrl) URL.revokeObjectURL(state.frameUrl);
+  state.frameUrl = null;
+  elements.cameraImage.removeAttribute("src");
+  elements.cameraFrame.style.removeProperty("aspect-ratio");
+  elements.pairingPanel.classList.remove("paired");
+  elements.pairController.disabled = true;
+  updateButtons({});
+  setCameraLive(false, "Pair the controller to open its camera feed.");
+  announce("Disconnecting controller...");
+  const stopRequest = (path) => fetch(`${base}${path}`, {
+    method: "POST", headers, signal: AbortSignal.timeout(3000),
+  });
+  try {
+    const response = await stopRequest("/api/disconnect");
+    if (response.status === 404) {
+      const stops = await Promise.all(
+        ["/api/stop", "/api/pose/stop", "/api/calibration/stop"].map(stopRequest),
+      );
+      if (stops.some((stop) => !stop.ok)) throw new Error("Stop request rejected.");
+      announce("Disconnected. Stops requested; update/restart the bridge to release its camera.", "success");
+    } else {
+      if (!response.ok) throw new Error("Disconnect request rejected.");
+      announce("Controller disconnected. Active sessions asked to stop.", "success");
+    }
+  } catch {
+    announce("Browser disconnected. Stop could not be confirmed; inspect the robot. Heartbeat watchdogs remain active.", "error");
+  } finally {
+    elements.pairController.disabled = false;
   }
 }
 
@@ -455,7 +540,7 @@ async function startControl() {
       body: JSON.stringify({ camera_live: state.lastFrameAt !== null && Date.now() - state.lastFrameAt <= 1500 }),
     });
     await recordSessionStart();
-    announce("Follower connection requested.", "success");
+    announce("Teleoperation requested through the local controller.", "success");
     await pollStatus();
   } catch (error) {
     announce(error.message, "error");
@@ -586,6 +671,8 @@ async function rearm() {
 elements.pairingOrigin.value = state.controllerBase;
 makeJogControls();
 renderMeasurements({});
+updateCameraRotation();
+new ResizeObserver(updateCameraRotation).observe(elements.cameraFrame);
 updateTheme();
 connectWorkerMetadata();
 poseMonitor = createPoseMonitor({
@@ -601,6 +688,12 @@ $("theme-toggle").addEventListener("click", () => {
   updateTheme();
 });
 $("pair-controller").addEventListener("click", pairController);
+elements.disconnectController.addEventListener("click", disconnectController);
+elements.cameraRotate.addEventListener("click", () => {
+  state.cameraRotation = (state.cameraRotation + 90) % 360;
+  localStorage.setItem("cf-robot-video-rotation", String(state.cameraRotation));
+  updateCameraRotation();
+});
 elements.start.addEventListener("click", startControl);
 elements.stop.addEventListener("click", stopControl);
 elements.manualMode.addEventListener("click", () => changeMode("manual"));

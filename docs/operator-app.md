@@ -121,14 +121,38 @@ decoded frames count as live in browser heartbeats. Missing/stale follower
 frames or loss of browser video stops the active controller session and
 latches the software stop; recovery never automatically restarts motion.
 
+Use **Rotate 90°** below the video to rotate the browser image clockwise.
+Four clicks return to the original orientation. The video window follows the
+decoded image's aspect ratio, swapping width/height proportions on quarter
+turns instead of leaving empty bars in a fixed 4:3 window. The entire image
+remains visible and the orientation is remembered in this browser across refreshes;
+this does not change the camera stream, joint coordinates or robot commands.
+
 ## Operator workflow
 
 The app always opens on **01 / Teleoperation**, including after a page refresh.
+Follower video and Measured pose share the top row, with Operate underneath.
+On narrow screens the model stacks below the video. Start/stop, readiness and
+input-mode controls are grouped in Operate rather than a separate Session box.
+
+Use **Disconnect controller** in the paired-controller bar to end pairing.
+The browser stops polling, clears its in-memory pairing code and video, and
+requests cancellation of teleoperation, monitoring and guided calibration.
+An updated local bridge also closes its follower video connection, releasing
+the camera; the bridge process itself stays running and can be paired again
+using its existing code. Restart the updated local bridge to enable this
+endpoint. Older bridges receive the existing stop requests instead, but must
+be restarted to release their camera relay. If the bridge cannot be reached,
+the UI warns that stopping is unconfirmed; inspect the robot and rely on the
+heartbeat watchdogs and physical stop as appropriate.
 
 1. Pair the hosted page with the controller laptop and wait for the follower
    camera to show fresh frames.
-2. Start a control session. The follower connection opens only after the
-   camera is live; connecting the camera/session by itself sends no motion.
+2. In Operate, select **Start teleoperation** after the camera is live.
+   This asks the local controller to open its Pi session; the browser still
+   uses only the local controller endpoint. Starting does not select leader
+   following automatically. **Stop teleoperation** ends that session without
+   unpairing the browser.
 3. Choose one input mode:
    - **On-screen:** use the per-joint `+`/`−` jog controls and a bounded step
      size. The UI and local agent enforce the nominal SO-ARM101 URDF joint

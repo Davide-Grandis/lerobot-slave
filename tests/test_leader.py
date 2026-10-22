@@ -8,12 +8,34 @@ from unittest.mock import patch
 try:
     from websockets.asyncio.server import serve
     from websockets.exceptions import ConnectionClosed
-    from cf_robot.leader import STARTUP_SYNC_STEP_UNITS, run_teleop
+    from cf_robot.leader import STARTUP_SYNC_STEP_UNITS, run_teleop, stream_status
 except ImportError:
     serve = None
     STARTUP_SYNC_STEP_UNITS = None
     run_teleop = None
 from cf_robot.protocol import JOINTS, VERSION, validate_command
+
+
+@unittest.skipIf(serve is None, "install project dependencies including websockets")
+class LeaderDiagnosticTests(unittest.IsolatedAsyncioTestCase):
+    async def test_remote_startup_failure_identifies_follower(self):
+        async def follower_socket(socket):
+            await socket.send(json.dumps({
+                "type": "error", "message": "Missing motor IDs: 2",
+            }))
+
+        with patch("cf_robot.leader.access_headers", return_value={}):
+            async with serve(follower_socket, "127.0.0.1", 0) as server:
+                port = server.sockets[0].getsockname()[1]
+                with self.assertRaisesRegex(RuntimeError, "follower arm: Missing motor IDs: 2"):
+                    await run_teleop(f"ws://127.0.0.1:{port}/control", "/dev/null", "test")
+
+    async def test_remote_live_failure_identifies_follower(self):
+        async def messages():
+            yield json.dumps({"type": "error", "message": "serial device disconnected"})
+
+        with self.assertRaisesRegex(RuntimeError, "follower arm: serial device disconnected"):
+            await stream_status(messages(), lambda message: None)
 
 
 @unittest.skipIf(serve is None, "install project dependencies including websockets")

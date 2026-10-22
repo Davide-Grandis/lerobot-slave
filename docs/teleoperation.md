@@ -29,6 +29,12 @@ torque OFF on both arms.
 The paired J5-J6 test likewise requires leader J5/J6 and follower J6 torque OFF.
 Follower J5 may already be powered holding its wrist position.
 
+Calibration, motor-connection, torque and range diagnostics identify the
+affected arm as `leader` or `follower`. Raw-position range errors also include
+the measured encoder ticks and permitted tick range. Errors returned by the
+Pi are labeled `follower arm`, including failures before startup completes.
+These labels do not change any calibration, range check or stopping behavior.
+
 The CLI shows current poses and asks **Press Enter to continue**. Browser users
 connect the leader, select **Leader arm** and explicitly confirm the movement
 dialog. After confirmation:

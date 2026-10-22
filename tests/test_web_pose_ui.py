@@ -32,7 +32,14 @@ window.testMissingLeader = false;
 window.testSampleAge = 0;
 window.testVideoRequests = 0;
 window.testVideoMode = 'offline';
+window.testVideoPortrait = false;
+window.testVideoDimensions = null;
 window.testVideoHeartbeats = [];
+window.testBridgeRequests = [];
+window.testStops = [];
+window.testDisconnectMode = 'supported';
+window.testHoldStatus = false;
+window.testHoldVideo = false;
 window.testJ6Torque = true;
 const keys = ['shoulder_pan.pos','shoulder_lift.pos','elbow_flex.pos',
               'wrist_flex.pos','wrist_roll.pos','gripper.pos'];
@@ -60,6 +67,25 @@ window.fetch = async (url, options={}) => {
   const reply = (payload,status=200) => new Response(JSON.stringify(payload),
     {status,headers:{'Content-Type':'application/json'}});
   if (!path.startsWith('/api/')) return originalFetch(url,options);
+  window.testBridgeRequests.push(path);
+  if (path === '/api/disconnect') {
+    window.testStops.push(path);
+    window.testStopHeaders=options.headers;
+    if (window.testDisconnectMode === 'offline') throw new TypeError('bridge offline');
+    if (window.testDisconnectMode === 'old') return reply({},404);
+    window.testControl={...window.testControl,running:false,state:'idle',camera_live:false};
+    running=false;
+    return reply({state:'idle'});
+  }
+  if (path === '/api/stop') {
+    window.testStops.push(path);
+    window.testControl={...window.testControl,running:false,state:'idle'};
+    return reply({state:'idle'});
+  }
+  if (path === '/api/calibration/stop') {
+    window.testStops.push(path);
+    return reply({state:'idle'});
+  }
   if (path === '/api/me') return reply({name:'PUBLIC OPERATOR',authenticated:false});
   if (path === '/api/robots') return reply({robots:[{id:'so101-main'}]});
   if (path === '/api/config') {
@@ -67,6 +93,14 @@ window.fetch = async (url, options={}) => {
     return reply({api_version:1});
   }
   if (path === '/api/status' && window.testControlOffline) return reply({},503);
+  if (path === '/api/status' && window.testHoldStatus) {
+    window.testHoldStatus=false;
+    return new Promise(resolve=>{
+      window.testReleaseStatus=()=>resolve(reply({
+        ...window.testControl,running:true,state:'ready',camera_live:true
+      }));
+    });
+  }
   if (path === '/api/status') return reply({
     ...window.testControl,
     follower_observed_at:window.testControl.follower_positions
@@ -90,17 +124,27 @@ window.fetch = async (url, options={}) => {
       return new Response('not a JPEG', {headers:{'Content-Type':'image/jpeg'}});
     }
     const canvas=document.createElement('canvas');
-    canvas.width=64; canvas.height=48;
+    canvas.width=window.testVideoDimensions?.[0] ?? (window.testVideoPortrait?48:64);
+    canvas.height=window.testVideoDimensions?.[1] ?? (window.testVideoPortrait?64:48);
     const context=canvas.getContext('2d');
     context.fillStyle=window.testVideoRequests%2?'#ff0000':'#0000ff';
-    context.fillRect(0,0,64,48);
+    context.fillRect(0,0,canvas.width,canvas.height);
     const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg'));
+    if (window.testHoldVideo) {
+      window.testHoldVideo=false;
+      return new Promise(resolve=>{
+        window.testReleaseVideo=()=>resolve(new Response(blob,{headers:{'Content-Type':'image/jpeg'}}));
+      });
+    }
     return new Response(blob,{headers:{'Content-Type':'image/jpeg'}});
   }
   if (path === '/api/pose/start') {
     sides=JSON.parse(options.body).sides || 'both'; running=true; return reply({running});
   }
-  if (path === '/api/pose/stop') { running=false; return reply({running}); }
+  if (path === '/api/pose/stop') {
+    window.testStops.push(path);
+    running=false; return reply({running});
+  }
   if (path === '/api/pose/command') {
     const body = JSON.parse(options.body);
     window.testCommands.push(body);
@@ -145,7 +189,9 @@ window.fetch = async (url, options={}) => {
 )
 class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
     async def test_tabs_readings_commands_stop_and_mobile_layout(self):
-        root = Path(__file__).resolve().parents[1] / "src/cf_robot/operator"
+        root = Path(os.environ.get(
+            "CF_ROBOT_UI_ROOT", Path(__file__).resolve().parents[1] / "src/cf_robot/operator",
+        ))
         server = http.server.ThreadingHTTPServer(
             ("127.0.0.1", 0),
             functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root)),
@@ -213,21 +259,36 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                     origin = f"http://127.0.0.1:{server.server_port}"
                     await cdp("Page.navigate", {"url": origin})
                     await wait_for("document.querySelectorAll('#pose-readings tr').length === 6")
-                    await wait_for("document.getElementById('operator-identity').textContent==='PUBLIC OPERATOR'")
+                    await wait_for("document.getElementById('operator-identity').textContent==='OPERATOR'")
                     self.assertTrue(await evaluate("""
-                      document.querySelector('main').firstElementChild.matches('.intro') &&
-                      document.querySelector('main').children[1].id === 'pairing-panel' &&
-                      document.querySelector('h1').textContent === 'SO-ARM101 Console' &&
+                      document.querySelector('main').firstElementChild.id === 'pairing-panel' &&
+                      document.querySelector('main').children[1].classList.contains('utility-bar') &&
+                      document.getElementById('connection-strip') === null &&
+                      document.querySelector('header h1').textContent === 'SO-ARM101 Demo Console' &&
+                      document.title === 'SO-ARM101 Demo Console' &&
+                      document.querySelectorAll('h1').length === 1 &&
+                      document.querySelector('.intro') === null &&
+                      document.querySelector('.brand-mark').getAttribute('aria-label') === 'Cloudflare logo' &&
+                      document.querySelectorAll('.brand-mark path').length === 2 &&
                       parseFloat(getComputedStyle(document.querySelector('h1')).fontSize) <= 48 &&
                       document.querySelector('.intro-copy') === null &&
                       document.querySelector('.device-tag') === null &&
                       document.getElementById('pairing-panel').getBoundingClientRect().bottom <
                         document.querySelector('.utility-tabs').getBoundingClientRect().top &&
                       document.querySelector('.camera-panel').offsetParent !== null &&
-                      document.querySelector('.session-panel').offsetParent !== null &&
+                      document.querySelector('.session-panel') === null &&
+                      document.querySelector('.stage-grid').children[0].classList.contains('camera-panel') &&
+                      document.querySelector('.stage-grid').children[1].classList.contains('model-panel') &&
+                      document.querySelector('.operation-grid').children[0].classList.contains('control-panel') &&
+                      document.getElementById('start-control').closest('.control-panel') !== null &&
+                      document.getElementById('stop-control').closest('.control-panel') !== null &&
                       document.getElementById('teleop-tab').getAttribute('aria-selected') === 'true' &&
                       document.getElementById('pose-panel').hidden
                     """))
+                    self.assertEqual(await evaluate(
+                        "document.getElementById('camera-frame').dataset.rotation",
+                    ), "0")
+                    await evaluate("document.getElementById('camera-rotate').click()")
                     await evaluate("document.getElementById('pose-tab').click()")
                     self.assertTrue(await evaluate("document.getElementById('teleop-panel').hidden"))
                     await cdp("Page.reload")
@@ -240,7 +301,14 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                       document.getElementById('teleop-tab').tabIndex === 0 &&
                       document.getElementById('pose-tab').tabIndex === -1
                     """))
+                    self.assertEqual(await evaluate(
+                        "document.getElementById('camera-frame').dataset.rotation",
+                    ), "90")
+                    await evaluate("""
+                      for(let turn=0;turn<3;turn++) document.getElementById('camera-rotate').click();
+                    """)
                     self.assertTrue(await evaluate("document.getElementById('pose-start').disabled"))
+                    self.assertTrue(await evaluate("document.getElementById('disconnect-controller').offsetParent===null"))
                     self.assertIn("Pair the local controller", await evaluate(
                         "document.getElementById('pose-start-reason').textContent",
                     ))
@@ -293,6 +361,7 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                     await evaluate("""
                       document.getElementById('pose-tab').click();
                       document.getElementById('controller-origin').value=location.origin;
+                      document.getElementById('pairing-code').value='quiet-otter';
                       document.getElementById('pair-controller').click();
                     """)
                     await wait_for("!document.getElementById('pose-start').disabled")
@@ -460,7 +529,7 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                     await evaluate("document.getElementById('teleop-tab').click()")
                     self.assertTrue(await evaluate("""
                       document.querySelector('.camera-panel').offsetParent !== null &&
-                      document.querySelector('.session-panel').offsetParent !== null &&
+                      document.querySelector('.model-panel').offsetParent !== null &&
                       document.getElementById('pose-panel').hidden
                     """))
                     await evaluate("""
@@ -483,6 +552,60 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                     await wait_for(
                         f"document.getElementById('camera-image').src !== {json.dumps(previous_frame)}",
                     )
+                    for width, height in ((1440, 1400), (390, 844)):
+                        await cdp("Emulation.setDeviceMetricsOverride", {
+                            "width": width, "height": height, "deviceScaleFactor": 1,
+                            "mobile": width < 500,
+                        })
+                        for portrait in (False, True):
+                            await evaluate(f"window.testVideoPortrait={json.dumps(portrait)}")
+                            await wait_for(
+                                f"document.getElementById('camera-image').naturalWidth==={48 if portrait else 64}",
+                            )
+                            self.assertTrue(await evaluate("""(() => {
+                              const camera=document.querySelector('.camera-panel').getBoundingClientRect();
+                              const model=document.querySelector('.model-panel').getBoundingClientRect();
+                              const controls=document.querySelector('.control-panel').getBoundingClientRect();
+                              const beside=innerWidth>690
+                                ? Math.abs(camera.top-model.top)<1 && model.left>=camera.right
+                                : model.top>=camera.bottom;
+                              return beside && controls.top>=Math.max(camera.bottom,model.bottom)
+                                && document.getElementById('start-control').textContent.includes('Start teleoperation');
+                            })()"""))
+                            for angle in (90, 180, 270, 0):
+                                await evaluate("document.getElementById('camera-rotate').click()")
+                                self.assertEqual(await evaluate(
+                                    "document.getElementById('camera-frame').dataset.rotation",
+                                ), str(angle))
+                                self.assertTrue(await evaluate(f"""(() => {{
+                                  const image=document.getElementById('camera-image');
+                                  const frame=document.getElementById('camera-frame').getBoundingClientRect();
+                                  const box=image.getBoundingClientRect();
+                                  const matrix=new DOMMatrixReadOnly(getComputedStyle(image).transform);
+                                  const radians={angle}*Math.PI/180;
+                                  const aspect={angle}%180
+                                    ? image.naturalHeight/image.naturalWidth
+                                    : image.naturalWidth/image.naturalHeight;
+                                  return Math.abs(matrix.a-Math.cos(radians))<0.00001
+                                    && Math.abs(matrix.b-Math.sin(radians))<0.00001
+                                    && Math.abs(frame.width/frame.height-aspect)<0.002
+                                    && Math.abs(box.left-frame.left)<1
+                                    && Math.abs(box.top-frame.top)<1
+                                    && Math.abs(box.right-frame.right)<1
+                                    && Math.abs(box.bottom-frame.bottom)<1
+                                    && document.documentElement.scrollWidth<=innerWidth;
+                                }})()"""))
+                    for dimensions in ([96, 54], [64, 64]):
+                        await evaluate(f"window.testVideoDimensions={json.dumps(dimensions)}")
+                        await wait_for(f"""(() => {{
+                          const image=document.getElementById('camera-image');
+                          const frame=document.getElementById('camera-frame').getBoundingClientRect();
+                          return image.naturalWidth==={dimensions[0]} && image.naturalHeight==={dimensions[1]}
+                            && Math.abs(frame.width/frame.height-{dimensions[0] / dimensions[1]})<0.002;
+                        }})()""")
+                    await evaluate("window.testVideoDimensions=null; window.testVideoPortrait=false")
+                    self.assertEqual(await evaluate("window.testModeRequests"), [])
+                    self.assertEqual(await evaluate("window.testCommands.length"), 4)
                     await evaluate("""
                       window.testControl={...window.testControl,running:true,state:'ready',
                         mode:'manual',leader_connected:true};
@@ -582,6 +705,63 @@ class PoseBrowserTests(unittest.IsolatedAsyncioTestCase):
                         (Path(os.environ["CF_ROBOT_SCREENSHOT_DIR"]) / "measured-home-mobile.png").write_bytes(
                             base64.b64decode(image["data"]),
                         )
+                    self.assertTrue(await evaluate(
+                        "document.getElementById('disconnect-controller').offsetParent!==null",
+                    ))
+                    await evaluate("""
+                      window.testStops=[];
+                      window.testControl={...window.testControl,running:true,state:'ready',camera_live:true};
+                      window.testHoldStatus=true; window.testHoldVideo=true;
+                    """)
+                    await wait_for("typeof window.testReleaseStatus==='function' && typeof window.testReleaseVideo==='function'")
+                    await evaluate("document.getElementById('disconnect-controller').click()")
+                    await wait_for("document.getElementById('pairing-status').textContent.includes('Controller disconnected.')")
+                    self.assertEqual(await evaluate("window.testStops"), ["/api/disconnect"])
+                    self.assertEqual(await evaluate("window.testStopHeaders['X-CF-Robot-Bridge']"), "quiet-otter")
+                    await evaluate("window.testReleaseStatus(); window.testReleaseVideo()")
+                    requests = await evaluate("window.testBridgeRequests.length")
+                    await asyncio.sleep(1.2)
+                    self.assertEqual(await evaluate("window.testBridgeRequests.length"), requests)
+                    self.assertTrue(await evaluate("""
+                      !document.getElementById('pairing-panel').classList.contains('paired') &&
+                      document.getElementById('pairing-code').value==='' &&
+                      !document.getElementById('camera-image').hasAttribute('src') &&
+                      !document.getElementById('camera-image').classList.contains('visible') &&
+                      document.getElementById('arm-canvas').dataset.state==='home' &&
+                      document.getElementById('start-control').disabled &&
+                      document.getElementById('software-stop').disabled &&
+                      document.getElementById('pose-start').disabled &&
+                      document.getElementById('disconnect-controller').offsetParent===null
+                    """))
+
+                    async def repair():
+                        await evaluate("""
+                          document.getElementById('pairing-code').value='quiet-otter';
+                          document.getElementById('pair-controller').click();
+                        """)
+                        await wait_for("document.getElementById('pairing-panel').classList.contains('paired')")
+
+                    await repair()
+                    await evaluate("document.getElementById('pose-tab').click()")
+                    await wait_for("!document.getElementById('pose-start').disabled")
+                    await evaluate("document.getElementById('pose-start').click()")
+                    await wait_for("document.getElementById('pose-state').textContent==='READY'")
+                    await evaluate("window.testDisconnectMode='old'; window.testStops=[]")
+                    await evaluate("document.getElementById('disconnect-controller').click()")
+                    await wait_for("document.getElementById('pairing-status').textContent.includes('update/restart')")
+                    self.assertEqual(sorted(await evaluate("window.testStops")), sorted([
+                        "/api/disconnect", "/api/stop", "/api/pose/stop", "/api/calibration/stop",
+                    ]))
+                    await wait_for("document.getElementById('pose-follower-model').dataset.state==='waiting'")
+                    await repair()
+                    await evaluate("window.testDisconnectMode='offline'")
+                    await evaluate("document.getElementById('disconnect-controller').click()")
+                    await wait_for("document.getElementById('pairing-status').textContent.includes('Stop could not be confirmed')")
+                    self.assertTrue(await evaluate("""
+                      !document.getElementById('pair-controller').disabled &&
+                      document.getElementById('pairing-code').value==='' &&
+                      !document.getElementById('pairing-panel').classList.contains('paired')
+                    """))
                     self.assertFalse([event for event in self.events
                                       if event.get("method") == "Runtime.exceptionThrown"])
                 chrome.terminate()

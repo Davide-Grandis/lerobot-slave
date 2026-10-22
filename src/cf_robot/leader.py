@@ -25,7 +25,7 @@ async def stream_status(socket, on_status):
     async for raw in socket:
         message = json.loads(raw)
         if message.get("type") == "error":
-            raise RuntimeError(message.get("message", "follower error"))
+            raise RuntimeError(f"follower arm: {message.get('message', 'unknown error')}")
         if message.get("type") == "status":
             on_status(message)
     raise ConnectionError("follower connection closed")
@@ -71,7 +71,7 @@ async def run_teleop(
     async with connect(url, additional_headers=headers, open_timeout=10, ping_interval=10, ping_timeout=5) as socket:
         first = json.loads(await asyncio.wait_for(socket.recv(), timeout=25))
         if first.get("type") != "ready" or first.get("version") != VERSION:
-            raise RuntimeError(first.get("message", "follower did not become ready"))
+            raise RuntimeError(f"follower arm: {first.get('message', 'did not become ready')}")
         if isolated and (
             first.get("mode") != ("gripper-only" if gripper_only else "joint-only")
             or first.get("joints") != list(joints)

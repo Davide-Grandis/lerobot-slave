@@ -56,6 +56,19 @@ zero, then:
 4. Hold at zero until the next confirmed release. After the last joint, a final
    ENTER releases all torque and ends the session.
 
+Every confirmation offers **S then ENTER to skip** (`s` also works):
+
+- At the torque-release prompt, skip the entire joint without releasing torque
+  or running its dependent movement tasks.
+- At the MIN/MAX prompt, skip that sweep and proceed to the zero prompt. The
+  joint stays unpowered unless you separately confirm enabling it for zero.
+- At the zero prompt, skip the return-to-zero movement and advance.
+- At the final release prompt, finish without changing the existing torque
+  states; any powered joint continues holding.
+
+Skipping never sends a movement or torque command for the skipped task. Use
+`q` then ENTER or Ctrl-C to cancel instead of skipping.
+
 J1-J5 return to 0 degrees using their verified independent zero ticks, not the
 range midpoint. J6 returns to calibrated 0% at MIN, not 0 degrees; ensure closing
 the gripper will not trap anything.
@@ -65,6 +78,28 @@ provisional ranges or unverified zeros block the test. MIN/MAX are servo limits,
 not proof that every configuration is collision-free. A move is reported as
 reached within the existing 1-degree/1-percentage-point tolerance, not exact
 contact with a mechanical stop.
+
+## Live Load Readback
+
+During movement, progress reports include the tested joint's `Present_Load`
+register (address 60), read by the existing hardware-owner thread. Periodic
+reports are sampled approximately every 0.25 seconds, not on every bus cycle.
+Initial and terminal reports also include load when available.
+
+```text
+J2: 61.88 -> 0.00 degrees | load=+520 raw (+52.0% est.)
+```
+
+The SDK already decodes the direction bit; negative readings remain negative.
+The percent is the signed raw value divided by ten on the STS3215 scale. It is
+an estimated controller load indicator, not calibrated torque in Nm or electrical
+current. Current is a separate register. Short spikes between samples may be
+missed; correlate load with current, voltage, temperature and fault status.
+
+Failed reads appear as `load=unavailable`, never as zero. Both the Pi's progress
+handler and the Mac client must include load telemetry; an older Pi that sends
+no load fields also displays `load=unavailable`. Monitoring adds no parameter,
+torque or goal writes and does not change protection thresholds.
 
 ## Speed And Failure Behavior
 
@@ -78,8 +113,20 @@ or zero/unrestricted setting. A failed move holds its fresh measured position
 before reporting failure. Cancellation requests the same safe monitor stop.
 No EEPROM, calibration, PID or torque-limit changes are made.
 
-Any failure stops the entire routine without retrying, advancing to MAX/zero or
-starting another joint. Ctrl-C does not automatically release the powered joint,
+When a position move explicitly fails with a confirmed in-range measured hold,
+the CLI obtains fresh readback and offers ENTER to retry the same target, S to
+skip, or q to cancel. Each movement permits at most two explicitly confirmed
+retries. Speed, torque, limits and PID are not increased. A reported nonzero
+servo fault blocks retries. Inspect for obstruction, strain or heat before
+confirming; a retry is not a diagnosis or a way to force a blocked mechanism.
+
+Skipping a failed MIN/MAX movement skips the rest of that sweep and offers the
+separately confirmed zero task. Skipping a failed zero advances to the next
+joint's release confirmation.
+
+Connection timeouts, uncertain outcomes, failed/unverified holds, rejected or
+partial commands, and exhausted retries still stop the routine without replaying
+commands or advancing. Ctrl-C does not automatically release the powered joint,
 because that could drop the arm. Previously released joints remain unpowered.
 Support the arm before explicitly changing torque afterward. Lost communication
 or a failed hold may prevent software stopping from being verified; use the

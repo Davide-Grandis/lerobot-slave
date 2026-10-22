@@ -1,4 +1,4 @@
-"""Explicit local leader hardware-limit update using existing angular references."""
+"""Explicit local leader hardware-limit update with measured angular references."""
 
 import argparse
 import json
@@ -18,6 +18,12 @@ def main():
     parser.add_argument("--joint", type=int, choices=range(1, 6), default=5)
     parser.add_argument("--min", dest="minimum", type=int, required=True)
     parser.add_argument("--max", dest="maximum", type=int, required=True)
+    parser.add_argument(
+        "--zero-ticks", type=float,
+        help="measured zero; alone this uses 360/encoder-resolution degrees per tick",
+    )
+    parser.add_argument("--reference-ticks", type=int, help="encoder ticks at a second measured angle")
+    parser.add_argument("--reference-degrees", type=float, help="nonzero angle of the second reference")
     args = parser.parse_args()
     print(
         "Stop ARMS MONITOR/teleoperation first. Secure/support the leader.\n"
@@ -30,7 +36,11 @@ def main():
         device = make_leader(args.port, args.arm_id)
         connected = True
         device.bus.connect()
-        preview = manager.preview_limits(device, args.joint, args.minimum, args.maximum)
+        preview = manager.preview_limits(
+            device, args.joint, args.minimum, args.maximum,
+            zero_ticks=args.zero_ticks, reference_ticks=args.reference_ticks,
+            reference_degrees=args.reference_degrees,
+        )
         preview["instruction"] = f"Type APPLY J{args.joint} LIMITS in this terminal"
         print(json.dumps(preview, indent=2))
         confirmation = input(

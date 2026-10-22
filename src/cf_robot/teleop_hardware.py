@@ -19,14 +19,17 @@ class TeleopLeader:
 
     def connect(self, calibrate=False):
         if calibrate:
-            raise ValueError("teleoperation does not calibrate interactively")
+            raise ValueError(f"{self.side} teleoperation does not calibrate interactively")
         for joint in self.joints:
             name = joint.removesuffix(".pos")
             motor = self.bus.motors[name]
             if motor.id != JOINTS.index(joint) + 1 or motor.model != "sts3215":
-                raise ValueError(f"{joint_label(joint)} motor identity is invalid")
+                raise ValueError(f"{self.side} {joint_label(joint)} motor identity is invalid")
         self.is_connected = True
-        self.bus.connect()
+        try:
+            self.bus.connect()
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise RuntimeError(f"{self.side} arm connection failed: {exc}") from exc
         report = inspect_calibration(
             self.device, self.side, read_servo_limits(self.bus, strict=False),
         )
@@ -44,7 +47,7 @@ class TeleopLeader:
             if item.get("converted_range") is not None:
                 self.unit_limits[joint] = sorted(item["converted_range"])
         if warnings:
-            raise ValueError("selected-joint calibration must be consistent: " + "; ".join(warnings))
+            raise ValueError(f"{self.side} selected-joint calibration must be consistent: " + "; ".join(warnings))
         torque_off_joints = self.joints if self.side == "leader" else (
             GRIPPER_JOINTS if self.joints in (GRIPPER_JOINTS, WRIST_GRIPPER_JOINTS) else ()
         )
@@ -53,7 +56,7 @@ class TeleopLeader:
                 if self.bus.read(
                     "Torque_Enable", joint.removesuffix(".pos"), normalize=False, num_retry=2,
                 ):
-                    raise ValueError(f"{joint_label(joint)} torque must already be OFF")
+                    raise ValueError(f"{self.side} {joint_label(joint)} torque must already be OFF")
         self.get_action()
 
     def raw_positions(self):
@@ -68,7 +71,9 @@ class TeleopLeader:
             limits = self.raw_limits[joint]
             if not limits["min"] <= value <= limits["max"]:
                 raise ValueError(
-                    f"{joint_label(joint)} is outside its saved range; inspect before moving"
+                    f"{self.side} {joint_label(joint)} raw={value} ticks is outside "
+                    f"its verified range {limits['min']}..{limits['max']} ticks; "
+                    "inspect before moving"
                 )
             result[joint] = value
         return result
@@ -81,7 +86,7 @@ class TeleopLeader:
         converted = self.bus._normalize({ids[joint]: raw[joint] for joint in self.joints})
         values = validate_action({joint: converted[ids[joint]] for joint in self.joints}, self.joints)
         if "gripper.pos" in values and not 0 <= values["gripper.pos"] <= 100:
-            raise ValueError("gripper value must be between 0 and 100 percent")
+            raise ValueError(f"{self.side} gripper value must be between 0 and 100 percent")
         return values
 
     def disconnect(self):
@@ -125,25 +130,25 @@ class TeleopFollower(TeleopLeader):
             low, high = self.unit_limits[joint]
             if not low <= value <= high:
                 raise ValueError(
-                    f"{joint_label(joint)} target {value:.2f} is outside saved range {low:.2f}..{high:.2f}"
+                    f"follower {joint_label(joint)} target {value:.2f} is outside saved range {low:.2f}..{high:.2f}"
                 )
         measured = self.get_action()
         try:
             applied = self.motion.plan(action, measured)
         except RuntimeError as exc:
-            raise RuntimeError(f"{exc} Speed registers={self.speeds}") from exc
+            raise RuntimeError(f"follower {exc} Speed registers={self.speeds}") from exc
         if not self.changed:
             raw = self.raw_positions()
             for joint in self.joints:
                 name = joint.removesuffix(".pos")
                 speed = int(self.bus.read("Goal_Velocity", name, normalize=False, num_retry=2))
                 if not 0 <= speed <= 1023:
-                    raise ValueError(f"{joint_label(joint)} has an unexpected speed register")
+                    raise ValueError(f"follower {joint_label(joint)} has an unexpected speed register")
                 self.previous_speeds[name] = speed
             if self.release_gripper and self.bus.read(
                 "Torque_Enable", "gripper", normalize=False, num_retry=2,
             ):
-                raise ValueError("J6 torque changed before arming")
+                raise ValueError("follower J6 torque changed before arming")
             self.changed = True
             # Seed every selected goal before enabling any selected motor.
             for joint in self.joints:
@@ -180,7 +185,7 @@ class TeleopFollower(TeleopLeader):
                             raw = int(self.bus.read("Present_Position", name, normalize=False, num_retry=2))
                             limits = self.raw_limits[joint]
                             if not limits["min"] <= raw <= limits["max"]:
-                                raise ValueError(f"{name} cannot safely hold outside saved limits")
+                                raise ValueError(f"follower {name} cannot safely hold outside saved limits")
                             self.bus.write("Goal_Position", name, raw, normalize=False, num_retry=2)
                             safe_speed_restore.add(name)
                         except Exception as exc:  # noqa: BLE001 - leave last bounded goal, never release.
@@ -195,4 +200,4 @@ class TeleopFollower(TeleopLeader):
         finally:
             super().disconnect()
         if errors:
-            raise RuntimeError("teleoperation cleanup incomplete: " + "; ".join(errors))
+            raise RuntimeError("follower teleoperation cleanup incomplete: " + "; ".join(errors))

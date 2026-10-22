@@ -124,3 +124,104 @@ class MonitorMoveSafetyTests(unittest.TestCase):
         self.assertTrue(self.bus.torque["elbow_flex"])
         self.assertEqual(sum(entry[0] == ("Goal_Position", "elbow_flex", 2000) for entry in self.bus.writes), 1)
         self.assertFalse(any(m.get("state") == "failed" for m in self.results))
+
+    def follow_goals(self, response):
+        """Simulate a servo that moves `response(present, goal)` ticks per bus cycle."""
+        goal = {"value": self.bus.present["elbow_flex"]}
+        original_read = self.bus.read
+
+        def write(register, motor, value, **kwargs):
+            self.bus.writes.append(((register, motor, value), kwargs))
+            if register == "Goal_Velocity":
+                self.bus.speeds[motor] = value
+            elif register == "Goal_Position":
+                goal["value"] = value
+
+        def read(register, motor, **kwargs):
+            if register == "Present_Position" and motor == "elbow_flex" and not kwargs.get("normalize", True):
+                self.bus.present[motor] += response(self.bus.present[motor], goal["value"])
+            return original_read(register, motor, **kwargs)
+
+        return goal, write, read
+
+    def test_slow_but_moving_joint_is_not_cut_off_by_elapsed_time(self):
+        self.command["value"] = 2900
+        clock = iter(range(0, 10_000))
+
+        def creep(present, goal):
+            # One tick per cycle: far slower than the old 5 s per-step allowance.
+            return (goal > present) - (goal < present)
+
+        _, write, read = self.follow_goals(creep)
+        with patch.object(self.bus, "write", side_effect=write), patch.object(
+            self.bus, "read", side_effect=read,
+        ), patch("cf_robot.pose_monitor.time.monotonic", side_effect=lambda: next(clock) * 0.05), patch(
+            "cf_robot.pose_monitor.time.sleep",
+        ):
+            self.run_move()
+        self.assertEqual(self.results[-1]["state"], "succeeded")
+        self.assertGreater(self.results[-1]["elapsed_s"], 5)
+        self.assertLessEqual(abs(self.bus.present["elbow_flex"] - 2900), 11)
+
+    def test_load_steady_state_error_settles_short_and_keeps_target_goal(self):
+        def sag(present, goal):
+            # Gravity leaves the joint 20 ticks (~1.8 degrees) below its goal.
+            return 1 if present < goal - 20 else 0
+
+        goal, write, read = self.follow_goals(sag)
+        clock = iter(range(0, 10_000))
+        with patch.object(self.bus, "write", side_effect=write), patch.object(
+            self.bus, "read", side_effect=read,
+        ), patch("cf_robot.pose_monitor.time.monotonic", side_effect=lambda: next(clock) * 0.05), patch(
+            "cf_robot.pose_monitor.time.sleep",
+        ):
+            self.run_move()
+        result = self.results[-1]
+        self.assertEqual(result["state"], "settled_short")
+        self.assertEqual(goal["value"], 2050)
+        self.assertEqual(result["residual_ticks"], 20)
+        self.assertIn("servo_snapshot", result)
+        self.assertEqual(self.bus.speeds["elbow_flex"], HOME_SPEED)
+
+    def test_far_stall_reports_diagnostics_and_holds_measured_position(self):
+        self.command["value"] = 2900
+
+        def blocked(present, goal):
+            return 1 if present < 2300 and goal > present else 0
+
+        _, write, read = self.follow_goals(blocked)
+        clock = iter(range(0, 10_000))
+        with patch.object(self.bus, "write", side_effect=write), patch.object(
+            self.bus, "read", side_effect=read,
+        ), patch("cf_robot.pose_monitor.time.monotonic", side_effect=lambda: next(clock) * 0.05), patch(
+            "cf_robot.pose_monitor.time.sleep",
+        ):
+            self.run_move()
+        result = self.results[-1]
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("no measured progress", result["message"])
+        self.assertEqual(result["held_raw"], 2300)
+        self.assertEqual(self.bus.writes[-1][0], ("Goal_Position", "elbow_flex", 2300))
+        self.assertIn("Goal_Velocity", result["servo_snapshot"])
+        self.assertTrue(all(entry[0][1] == "elbow_flex" for entry in self.bus.writes))
+
+    def test_each_goal_stays_within_one_bounded_step_of_measured_position(self):
+        self.command["value"] = 2900
+        goals = []
+
+        def lag(present, goal):
+            return max(-5, min(5, goal - present))
+
+        _, write, read = self.follow_goals(lag)
+
+        def record(register, motor, value, **kwargs):
+            if register == "Goal_Position":
+                goals.append((self.bus.present[motor], value))
+            write(register, motor, value, **kwargs)
+
+        with patch.object(self.bus, "write", side_effect=record), patch.object(
+            self.bus, "read", side_effect=read,
+        ), patch("cf_robot.pose_monitor.time.sleep"):
+            self.run_move()
+        self.assertEqual(self.results[-1]["state"], "succeeded")
+        self.assertTrue(all(abs(goal - present) <= 28 for present, goal in goals))

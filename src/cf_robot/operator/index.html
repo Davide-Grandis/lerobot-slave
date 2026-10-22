@@ -4,30 +4,29 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#18211f">
-    <title>SO-ARM101 Console</title>
+    <title>SO-ARM101 Demo Console</title>
     <link rel="stylesheet" href="/app.css">
     <script type="module" src="/app.js"></script>
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <a class="brand" href="/" aria-label="Field Console home">
-          <span class="brand-mark" aria-hidden="true"><i></i><b></b></span>
-          <span>FIELD CONSOLE</span>
+        <a class="brand" href="/" aria-label="SO-ARM101 Demo Console home">
+          <!-- Official cloud mark: https://www.cloudflare.com/logo.svg -->
+          <svg class="brand-mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 341 156" fill="none" role="img" aria-label="Cloudflare logo">
+            <title>Cloudflare logo</title>
+            <path d="M275.125 68.25C311.507 68.25 341 97.9335 341 134.55C341 141.077 340.063 147.385 338.317 153.343C337.848 154.943 336.363 156 334.706 156H243.056C241.697 156 240.76 154.628 241.247 153.351L242.999 148.76C248.595 134.03 264.56 121.963 279.331 121.256L307.33 119.813C308.826 119.736 310 118.492 310 116.985C310 115.485 308.838 114.245 307.351 114.157L281.059 112.601C266.924 111.877 260.018 99.2932 263.82 86.179L268.195 71.0866C268.64 69.5514 269.971 68.4343 271.557 68.3476C272.738 68.2831 273.928 68.25 275.125 68.25Z" fill="#FAAE40"/>
+            <path d="M184.062 0C222 0 253.868 26.1297 262.882 61.4824C263.26 62.967 263.142 64.5333 262.601 65.9662L255.383 85.0897C249.787 99.8196 235.406 112.593 219.134 112.593L93.7928 114.043C92.2801 114.061 91.063 115.3 91.0625 116.823C91.0625 118.344 92.2776 119.585 93.789 119.605L217.365 121.248C231.531 121.248 238.406 134.556 234.606 147.671L233.011 153.189C232.53 154.855 231.014 156 229.291 156H3.90889C1.98075 156 0.330745 154.574 0.17634 152.64C0.0594555 151.175 0 149.695 0 148.2C0 119.723 21.6617 96.3403 49.306 93.8266C48.7387 91.2419 48.4375 88.5564 48.4375 85.8C48.4375 65.3379 64.919 48.75 85.25 48.75C93.3413 48.75 100.822 51.3789 106.897 55.8321C117.716 23.3806 148.176 0 184.062 0Z" fill="#F38020"/>
+          </svg>
+          <h1>SO-ARM101 Demo Console</h1>
         </a>
         <div class="topbar-right">
-          <span class="operator-pill"><span class="live-dot"></span><span id="operator-identity">LOCAL OPERATOR</span></span>
+          <span class="operator-pill"><span class="live-dot"></span><span id="operator-identity">OPERATOR</span></span>
           <button class="icon-button" id="theme-toggle" type="button" aria-label="Toggle theme">◐</button>
         </div>
       </header>
 
       <main>
-        <section class="intro">
-          <div class="intro-row">
-            <h1>SO-ARM101 <em>Console</em></h1>
-          </div>
-        </section>
-
         <section class="panel pairing-panel" id="pairing-panel">
           <div><span class="section-kicker">LOCAL HARDWARE BRIDGE</span><h2>Pair this controller</h2><p>Run the local controller service on the computer with the leader arm. Pairing code is shown once in that terminal.</p></div>
           <div class="pairing-fields">
@@ -35,14 +34,9 @@
             <label>One-run pairing code<input id="pairing-code" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="e.g. quiet-otter"></label>
             <button class="button button-primary" id="pair-controller" type="button">Pair controller <span>↗</span></button>
             <span class="pairing-status" id="pairing-status"></span>
+            <button class="button button-quiet" id="disconnect-controller" type="button">Disconnect controller</button>
           </div>
         </section>
-
-        <div class="connection-strip" id="connection-strip">
-          <span class="connection-indicator" id="connection-indicator"></span>
-          <span id="connection-label">CONNECT THE LOCAL CONTROLLER</span>
-          <span class="connection-right mono" id="connection-meta">WORKER / EDGE APP</span>
-        </div>
 
         <div class="utility-bar">
           <div class="utility-tabs" role="tablist" aria-label="Console utility">
@@ -59,7 +53,7 @@
               <div><span class="section-kicker">LIVE FEED / 01</span><h2>Follower camera</h2></div>
               <div class="live-label mono" id="camera-state"><span class="live-dot"></span><span>Waiting</span></div>
             </div>
-            <div class="camera-frame">
+            <div class="camera-frame" id="camera-frame">
               <img id="camera-image" alt="Live camera image from the follower arm">
               <div class="camera-placeholder" id="camera-placeholder">
                 <span class="camera-crosshair" aria-hidden="true"></span>
@@ -68,31 +62,9 @@
               <span class="camera-corner mono">CAM / FOLLOWER</span>
               <span class="camera-clock mono" id="camera-clock">NO SIGNAL</span>
             </div>
-            <div class="camera-foot"><span>JPEG · 10 FPS · LIVE READBACK</span><span id="camera-age">—</span></div>
+            <div class="camera-foot"><span>JPEG · 10 FPS · LIVE READBACK</span><button class="small-button" id="camera-rotate" type="button" aria-label="Rotate video image 90 degrees clockwise">Rotate 90°</button><span id="camera-age">—</span></div>
           </article>
 
-          <article class="panel session-panel">
-            <div class="panel-heading">
-              <div><span class="section-kicker">CONTROL / 01</span><h2>Session</h2></div>
-              <span class="session-state mono" id="session-state">IDLE</span>
-            </div>
-            <div class="session-body">
-              <p class="session-copy" id="session-detail">Camera must be live before a control session can connect.</p>
-              <div class="session-facts">
-                <div><span>FOLLOWER</span><strong id="follower-connection">OFFLINE</strong></div>
-                <div><span>LEADER</span><strong id="leader-connection">NOT CONNECTED</strong></div>
-                <div><span>POSE MATCH</span><strong id="alignment-state">NOT CHECKED</strong></div>
-              </div>
-              <div class="session-actions">
-                <button class="button button-primary" id="start-control" type="button" disabled>Connect follower <span>↗</span></button>
-                <button class="button button-quiet" id="stop-control" type="button" disabled>Disconnect</button>
-              </div>
-              <div class="stop-warning">Software stop is not a physical emergency stop. Keep the follower’s hardware stop and workspace in reach.</div>
-            </div>
-          </article>
-        </section>
-
-        <section class="operation-grid">
           <article class="panel model-panel">
             <div class="panel-heading model-heading">
               <div><span class="section-kicker">SO-ARM101 / SIX-JOINT STRUCTURE</span><h2>Measured pose</h2></div>
@@ -107,23 +79,34 @@
             <div class="joint-readings" id="joint-readings"></div>
             <div class="model-note"><span class="note-mark">i</span><span>J1 base yaw · J2 shoulder · J3 elbow · J4 wrist bend · J5 wrist roll · J6 gripper. Offline pose is an illustration, not the actual arm position. Geometry is approximate; verify physical zero offsets.</span></div>
           </article>
+        </section>
 
+        <section class="operation-grid">
           <article class="panel control-panel">
             <div class="panel-heading">
               <div><span class="section-kicker">INPUT SOURCE / EXCLUSIVE MODES</span><h2>Operate</h2></div>
-              <span class="mode-chip" id="mode-chip">MANUAL</span>
+              <div class="control-summary"><span class="session-state mono" id="session-state">IDLE</span><span class="mode-chip" id="mode-chip">MANUAL</span></div>
+            </div>
+            <div class="control-session">
+              <p class="session-copy" id="session-detail" role="status">Pair the local controller and wait for live video before starting teleoperation.</p>
+              <div class="session-actions">
+                <button class="button button-primary" id="start-control" type="button" disabled>Start teleoperation <span>↗</span></button>
+                <button class="button button-quiet" id="stop-control" type="button" disabled>Stop teleoperation</button>
+              </div>
+              <div class="stop-warning">Software stop is not a physical emergency stop. Keep the follower’s hardware stop and workspace in reach.</div>
             </div>
             <div class="mode-tabs" role="tablist" aria-label="Control source">
               <button id="manual-mode" class="mode-tab active" type="button" role="tab" aria-selected="true" disabled>On-screen</button>
               <button id="leader-mode" class="mode-tab" type="button" role="tab" aria-selected="false" disabled>Leader arm</button>
             </div>
             <div class="leader-connect-row">
-              <div><span class="section-kicker">USB / LOCAL</span><strong>Leader arm</strong></div>
+              <div><span class="section-kicker">LEADER / LOCAL USB</span><strong id="leader-connection">NOT CONNECTED</strong></div>
               <div class="leader-actions">
                 <button class="small-button" id="leader-connect" type="button" disabled>Connect leader</button>
                 <button class="small-button leader-disconnect" id="leader-disconnect" type="button" disabled>Disconnect leader</button>
               </div>
             </div>
+            <div class="control-readiness"><span>POSE MATCH</span><strong id="alignment-state">NOT CHECKED</strong></div>
             <div class="jog-toolbar"><span>JOINT / ON-SCREEN CONTROL</span><label for="jog-step">STEP <select id="jog-step" disabled><option value="0.5">0.5</option><option value="1" selected>1</option><option value="2.5">2.5</option><option value="5">5</option></select></label></div>
             <div class="jog-list" id="jog-list"></div>
             <div class="panel-footer-metrics">
@@ -260,7 +243,7 @@
         </div>
       </main>
 
-      <footer class="app-footer mono"><span>SO-ARM101 / FIELD CONSOLE</span><span>ONE CONTROL SOURCE AT A TIME · NO AUTO-RESUME</span></footer>
+      <footer class="app-footer mono"><span>SO-ARM101 / DEMO CONSOLE</span><span>ONE CONTROL SOURCE AT A TIME · NO AUTO-RESUME</span></footer>
     </div>
     <dialog id="rearm-dialog" class="rearm-dialog">
       <form method="dialog">

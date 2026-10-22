@@ -3,11 +3,12 @@ from copy import deepcopy
 from io import StringIO
 import json
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from cf_robot.protocol import JOINTS, SAFE_MONITOR_MOVES_CAPABILITY
-from cf_robot.sweep_client import main, run_sweep, sweep_plan
+from cf_robot.sweep_client import SweepSession, confirm_enter, main, run_sweep, sweep_plan
 
 
 def sample():
@@ -72,6 +73,9 @@ class FakeSocket:
         self.capabilities = [SAFE_MONITOR_MOVES_CAPABILITY]
         self.producer = None
         self.fail_joint = None
+        self.failures_remaining = None
+        self.confirmed_hold = False
+        self.fault_status = 0
         self.hang_move = False
         self.move_started = asyncio.Event()
 
@@ -130,14 +134,22 @@ class FakeSocket:
                 if self.hang_move:
                     self.move_started.set()
                     return
-                if joint_id == self.fail_joint:
+                if joint_id == self.fail_joint and self.failures_remaining != 0:
                     state = "failed"
+                    if self.failures_remaining is not None:
+                        self.failures_remaining -= 1
                 else:
                     self.pose["raw"][joint] = message["value"]
-            self.messages.put_nowait({
+            result = {
                 "type": "command_result", "command_id": message["command_id"],
                 "joint_id": joint_id, "state": state, "message": "test result",
-            })
+            }
+            if state == "failed" and self.confirmed_hold:
+                result.update(
+                    held_raw=self.pose["raw"][JOINTS[joint_id - 1]],
+                    servo_snapshot={"Status": self.fault_status},
+                )
+            self.messages.put_nowait(result)
 
 
 class SweepClientTests(unittest.IsolatedAsyncioTestCase):
@@ -185,7 +197,7 @@ class SweepClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_joint_aborts_without_max_zero_next_joint_or_auto_release(self):
         self.socket.fail_joint = 3
-        with self.assertRaisesRegex(RuntimeError, "without retry"):
+        with self.assertRaisesRegex(RuntimeError, "follower command failed"):
             await self.run_sweep()
         moves = [m for m in self.commands() if m["mode"] == "ticks"]
         self.assertEqual([m["joint_id"] for m in moves], [1, 1, 1, 2, 2, 2, 3])
@@ -193,10 +205,135 @@ class SweepClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.commands()[-1]["mode"], "ticks")
         self.assertEqual(self.socket.sent[-1]["type"], "stop")
 
+    async def test_confirmed_retry_reissues_same_target_then_continues(self):
+        self.socket.fail_joint = 3
+        self.socket.failures_remaining = 1
+        self.socket.confirmed_hold = True
+        await self.run_sweep((3,))
+        moves = [m for m in self.commands() if m["mode"] == "ticks"]
+        self.assertEqual([m["value"] for m in moves], [100, 100, 3900, 2000])
+        self.assertNotEqual(moves[0]["command_id"], moves[1]["command_id"])
+        self.assertEqual(sum("Retry" in call.args[0] for call in self.confirm.await_args_list), 1)
+
+    async def test_retry_requires_confirmation_and_q_does_not_reissue(self):
+        self.socket.fail_joint = 3
+        self.socket.confirmed_hold = True
+        self.confirm.side_effect = [None, None, RuntimeError("cancelled at retry")]
+        with self.assertRaisesRegex(RuntimeError, "cancelled at retry"):
+            await self.run_sweep((3,))
+        moves = [m for m in self.commands() if m["mode"] == "ticks"]
+        self.assertEqual(len(moves), 1)
+        self.assertTrue(self.socket.pose["torque"][JOINTS[2]])
+
+    async def test_skip_retry_skips_remaining_sweep_and_offers_zero(self):
+        self.socket.fail_joint = 3
+        self.socket.confirmed_hold = True
+        self.confirm.side_effect = [None, None, "skip", "skip", "skip"]
+        await self.run_sweep((3,))
+        moves = [m for m in self.commands() if m["mode"] == "ticks"]
+        self.assertEqual([m["value"] for m in moves], [100])
+        self.assertIn("0 degrees", self.confirm.await_args_list[3].args[0])
+        self.assertTrue(self.socket.pose["torque"][JOINTS[2]])
+
+    async def test_retries_are_bounded_and_do_not_advance_or_raise_speed(self):
+        self.socket.fail_joint = 3
+        self.socket.confirmed_hold = True
+        with self.assertRaisesRegex(RuntimeError, "follower command failed"):
+            await self.run_sweep((3,))
+        moves = [m for m in self.commands() if m["mode"] == "ticks"]
+        self.assertEqual([m["value"] for m in moves], [100, 100, 100])
+        self.assertEqual(self.confirm.await_count, 4)
+        self.assertTrue(self.socket.pose["torque"][JOINTS[2]])
+
+    async def test_fault_status_blocks_retry_even_with_confirmed_hold(self):
+        self.socket.fail_joint = 3
+        self.socket.confirmed_hold = True
+        self.socket.fault_status = 32
+        with self.assertRaisesRegex(RuntimeError, "follower command failed"):
+            await self.run_sweep((3,))
+        moves = [m for m in self.commands() if m["mode"] == "ticks"]
+        self.assertEqual(len(moves), 1)
+        self.assertEqual(self.confirm.await_count, 2)
+
+    async def test_uncertain_timeout_is_never_retried(self):
+        self.socket.hang_move = True
+        original = SweepSession.guard
+
+        async def guard(session, awaitable, timeout=None):
+            if timeout == 600 and session.command_id == 3:
+                awaitable.cancel()
+                raise TimeoutError("uncertain outcome")
+            return await original(session, awaitable, timeout)
+
+        with patch.object(SweepSession, "guard", guard):
+            with self.assertRaisesRegex(TimeoutError, "uncertain outcome"):
+                await self.run_sweep((3,))
+        moves = [m for m in self.commands() if m["mode"] == "ticks"]
+        self.assertEqual(len(moves), 1)
+        self.assertEqual(self.confirm.await_count, 2)
+
+    async def test_changed_torque_interlock_blocks_retry(self):
+        self.socket.fail_joint = 3
+        self.socket.confirmed_hold = True
+        original = self.socket.send
+
+        async def send(raw):
+            await original(raw)
+            if json.loads(raw).get("mode") == "ticks":
+                self.socket.pose["torque"][JOINTS[0]] = True
+
+        with patch.object(self.socket, "send", side_effect=send):
+            with self.assertRaisesRegex(RuntimeError, "single-joint state"):
+                await self.run_sweep((3,))
+        moves = [m for m in self.commands() if m["mode"] == "ticks"]
+        self.assertEqual(len(moves), 1)
+        self.assertEqual(self.confirm.await_count, 2)
+
     async def test_single_joint_mode_does_not_send_other_position_goals(self):
         await self.run_sweep((3,))
         moves = [m for m in self.commands() if m["mode"] == "ticks"]
         self.assertEqual([m["joint_id"] for m in moves], [3, 3, 3])
+
+    async def test_skip_release_advances_to_next_joint_without_powering_skipped_joint(self):
+        self.confirm.side_effect = ["skip", None, None, None, None]
+        await self.run_sweep((2, 3))
+        moves = [m for m in self.commands() if m["mode"] == "ticks"]
+        self.assertEqual([m["joint_id"] for m in moves], [3, 3, 3])
+        self.assertFalse(any(m.get("joint_id") == 2 for m in self.commands()))
+
+    async def test_skip_sweep_still_offers_separately_confirmed_zero(self):
+        self.confirm.side_effect = [None, "skip", None, None]
+        await self.run_sweep((3,))
+        moves = [m for m in self.commands() if m["mode"] == "ticks"]
+        self.assertEqual([m["value"] for m in moves], [2000])
+        self.assertTrue(any(m["mode"] == "torque" and m.get("enabled") is True for m in self.commands()))
+        self.assertIn("0 degrees", self.confirm.await_args_list[2].args[0])
+
+    async def test_skip_zero_does_not_send_zero_goal(self):
+        self.confirm.side_effect = [None, None, "skip", None]
+        await self.run_sweep((3,))
+        moves = [m for m in self.commands() if m["mode"] == "ticks"]
+        self.assertEqual([m["value"] for m in moves], [100, 3900])
+        self.assertFalse(any(self.socket.pose["torque"].values()))
+
+    async def test_skip_final_release_preserves_holding_torque(self):
+        self.confirm.side_effect = [None, None, None, "skip"]
+        await self.run_sweep((3,))
+        self.assertTrue(self.socket.pose["torque"][JOINTS[2]])
+        releases = [m for m in self.commands() if m["mode"] == "torque" and m.get("enabled") is False]
+        self.assertEqual(len(releases), 1)
+
+    async def test_skip_every_release_and_final_release_sends_no_servo_commands(self):
+        self.confirm.return_value = "skip"
+        await self.run_sweep()
+        self.assertEqual(self.commands(), [])
+        self.assertTrue(all(self.socket.pose["torque"].values()))
+
+    async def test_skipping_sweep_and_zero_does_not_enable_joint(self):
+        self.confirm.side_effect = [None, "skip", "skip", "skip"]
+        await self.run_sweep((3,))
+        self.assertEqual(len(self.commands()), 1)
+        self.assertFalse(any(self.socket.pose["torque"].values()))
 
     async def test_cancel_before_first_release_sends_no_commands(self):
         self.confirm.side_effect = RuntimeError("cancelled")
@@ -239,3 +376,19 @@ class SweepClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(errors.getvalue(), "")
         self.assertEqual(self.socket.sent[-1]["type"], "stop")
         self.assertTrue(self.socket.pose["torque"][JOINTS[2]])
+
+
+class ConfirmationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_enter_confirms_and_s_skips_with_visible_prompt(self):
+        loop = asyncio.get_running_loop()
+        for line, expected in (("\n", None), ("s\n", "skip"), ("S\n", "skip")):
+            output = StringIO()
+            source = SimpleNamespace(fileno=lambda: 0, readline=lambda: line)
+            with self.subTest(line=line), patch(
+                "cf_robot.sweep_client.sys.stdin", source,
+            ), patch("sys.stdout", output), patch.object(
+                loop, "add_reader", side_effect=lambda fd, ready: ready(),
+            ), patch.object(loop, "remove_reader") as remove:
+                self.assertEqual(await confirm_enter("Test task"), expected)
+            self.assertIn("or press S to skip", output.getvalue())
+            remove.assert_called_once_with(0)

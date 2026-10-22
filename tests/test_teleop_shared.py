@@ -149,6 +149,51 @@ class SharedHardwareTests(unittest.TestCase):
         leader.disconnect()
         self.assertEqual(self.bus.writes, [])
 
+    def test_calibration_warnings_identify_the_arm_without_writes(self):
+        self.bus.live["elbow_flex"]["homing_offset"] = 20
+        for factory, side in ((TeleopLeader, "leader"), (TeleopFollower, "follower")):
+            with self.subTest(side=side):
+                robot = factory(self.device)
+                with self.assertRaisesRegex(ValueError, rf"{side} selected-joint calibration.*J3"):
+                    robot.connect()
+                robot.disconnect()
+        self.assertEqual(self.bus.writes, [])
+
+    def test_connection_failure_identifies_the_arm_without_writes(self):
+        for factory, side in ((TeleopLeader, "leader"), (TeleopFollower, "follower")):
+            with self.subTest(side=side), patch.object(
+                self.bus, "connect", side_effect=OSError("Missing motor IDs: 2"),
+            ):
+                robot = factory(self.device)
+                with self.assertRaisesRegex(RuntimeError, rf"{side} arm connection failed.*Missing motor IDs"):
+                    robot.connect()
+                robot.disconnect()
+        self.assertEqual(self.bus.writes, [])
+
+    def test_torque_warning_identifies_the_arm_without_writes(self):
+        self.bus.torque["gripper"] = True
+        for factory, side in ((TeleopLeader, "leader"), (TeleopFollower, "follower")):
+            with self.subTest(side=side):
+                robot = factory(self.device, GRIPPER_JOINTS)
+                with self.assertRaisesRegex(ValueError, rf"{side} J6 .*torque must already be OFF"):
+                    robot.connect()
+                robot.disconnect()
+        self.assertEqual(self.bus.writes, [])
+
+    def test_raw_range_error_identifies_arm_position_and_limits_without_writes(self):
+        for factory, side in ((TeleopLeader, "leader"), (TeleopFollower, "follower")):
+            for raw in (99, 3901):
+                with self.subTest(side=side, raw=raw):
+                    self.bus.raw["elbow_flex"] = raw
+                    robot = factory(self.device)
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        rf"{side} J3 .*raw={raw} ticks.*100\.\.3900 ticks",
+                    ):
+                        robot.connect()
+                    robot.disconnect()
+                    self.assertEqual(self.bus.writes, [])
+
     def test_full_follower_rejects_target_outside_saved_degree_range_before_writes(self):
         robot = TeleopFollower(self.device)
         robot.connect()

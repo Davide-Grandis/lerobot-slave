@@ -221,7 +221,10 @@ export function createCalibrationPanel({ request, paired, getPose, controlStatus
         online = false;
         if (calibration.running) $("calibration-message").textContent = "Controller unavailable. Calibration watchdog cancels the procedure; inspect the arm.";
       }
-    } else online = false;
+    } else {
+      online = false;
+      calibration = { ...calibration, state: "idle", running: false };
+    }
     render();
     window.setTimeout(poll, 300);
   }

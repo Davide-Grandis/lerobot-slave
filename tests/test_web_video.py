@@ -16,12 +16,14 @@ except ImportError:
 class VideoSocket:
     def __init__(self):
         self.frames = asyncio.Queue()
+        self.closed = False
 
     async def __aenter__(self):
+        self.closed = False
         return self
 
     async def __aexit__(self, *args):
-        pass
+        self.closed = True
 
     def __aiter__(self):
         return self
@@ -145,3 +147,35 @@ class WebVideoTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(status["camera_live"])
         self.assertTrue(status["estop_latched"])
         self.assertTrue(self.controllers[0].stop_event.is_set())
+
+    async def test_disconnect_stops_control_monitor_calibration_and_releases_video(self):
+        await self.prime_camera()
+        await self.start_control()
+        with patch("cf_robot.web.BrowserPoseMonitor.stop") as monitor_stop, patch(
+            "cf_robot.web.BrowserCalibration.stop",
+        ) as calibration_stop:
+            response = await self.client.post("/api/disconnect")
+            self.assertEqual(response.status_code, 200)
+            monitor_stop.assert_called_once()
+            calibration_stop.assert_called_once()
+        self.assertTrue(self.controllers[0].stop_event.is_set())
+        self.assertTrue(self.socket.closed)
+        status = await self.wait_for_status(lambda status: not status["running"])
+        self.assertFalse(status["camera_live"])
+        self.assertFalse(status["estop_latched"])
+        self.assertEqual(status["error"], "Controller disconnected by operator.")
+        await self.prime_camera()
+        self.assertEqual(self.connect.call_count, 2)
+        self.assertFalse(self.socket.closed)
+
+    async def test_disconnect_requires_pairing_and_trusted_origin(self):
+        await self.prime_camera()
+        await self.start_control()
+        for headers in (
+            {"X-CF-Robot-Bridge": ""},
+            {"Origin": "https://untrusted.example"},
+        ):
+            response = await self.client.post("/api/disconnect", headers=headers)
+            self.assertEqual(response.status_code, 403)
+            self.assertFalse(self.controllers[0].stop_event.is_set())
+        self.assertFalse(self.socket.closed)

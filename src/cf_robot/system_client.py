@@ -8,7 +8,7 @@ import sys
 from urllib.parse import urlsplit, urlunsplit
 
 from websockets.asyncio.client import connect
-from websockets.exceptions import WebSocketException
+from websockets.exceptions import InvalidStatus, WebSocketException
 
 from cf_robot.auth import access_headers
 from cf_robot.protocol import VERSION
@@ -90,6 +90,17 @@ def main():
             print("Pi accepted the power schedule; completion cannot be verified over WSS.")
         if result["exit_code"] != 0:
             parser.exit(result["exit_code"] if 0 < result["exit_code"] < 256 else 1)
+    except InvalidStatus as exc:
+        status = exc.response.status_code
+        detail = (
+            "Cloudflare could not reach the Pi/Tunnel. Check Pi power, network and cloudflared."
+            if status == 530 else
+            "Check Access/origin credentials and Pi availability."
+        )
+        parser.exit(
+            1, f"Pi command NOT SENT: WebSocket handshake rejected (HTTP {status}).\n"
+            f"{detail}\nNo command was transmitted by this attempt.\n",
+        )
     except (OSError, ValueError, RuntimeError, TimeoutError, WebSocketException) as exc:
         parser.exit(1, f"Pi command failed (do not retry power commands blindly): {exc}\n")
     except (KeyboardInterrupt, EOFError):

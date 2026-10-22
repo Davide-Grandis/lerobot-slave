@@ -159,6 +159,111 @@ class LeaderLimitsTests(unittest.TestCase):
             manager.preview_limits(self.device, 5, 130, 3936)
         self.assertEqual(self.bus.writes, [])
 
+    def test_j4_zero_and_negative_reference_update_only_j4_maximum(self):
+        self.bus.calibration["wrist_flex"].update(homing_offset=601, range_min=80, range_max=2364)
+        self.bus.live["wrist_flex"].update(self.bus.calibration["wrist_flex"])
+        self.bus.raw["wrist_flex"] = 1220
+        self.path.write_text(json.dumps(self.bus.calibration))
+        sdk_before = json.loads(self.path.read_bytes())
+        profile_before = json.loads(self.profile_path.read_bytes())
+        live_before = self.bus.read_calibration()
+        manager = AngularInstall("leader")
+        preview = manager.preview_limits(
+            self.device, 4, 80, 2360,
+            zero_ticks=1220, reference_ticks=200, reference_degrees=-90,
+        )
+        self.assertEqual(preview["hardware_writes"], {"Max_Position_Limit": 2360})
+        self.assertEqual(preview["angular_profile"]["zero_ticks"], 1220)
+        self.assertAlmostEqual(preview["angular_profile"]["degrees_per_tick"], 90 / 1020)
+        self.assertEqual(self.bus.writes, [])
+        manager.apply(self.device, {
+            "joint_id": 4, "token": preview["token"], "confirmation": "APPLY ANGULAR AND LIMITS J4",
+        }, threading.Event())
+        after = json.loads(self.path.read_bytes())
+        for name in sdk_before:
+            if name != "wrist_flex":
+                self.assertEqual(after[name], sdk_before[name])
+                self.assertEqual(self.bus.live[name], live_before[name])
+        self.assertEqual(after["wrist_flex"]["range_min"], 80)
+        self.assertEqual(after["wrist_flex"]["range_max"], 2360)
+        self.assertEqual(self.bus.live["wrist_flex"]["homing_offset"], 601)
+        profile = json.loads(self.profile_path.read_bytes())
+        self.assertEqual(profile["joints"]["wrist_roll"], profile_before["joints"]["wrist_roll"])
+        self.assertEqual(profile["joints"]["wrist_flex"]["reference_points"], [
+            {"ticks": 1220, "degrees": 0}, {"ticks": 200, "degrees": -90},
+        ])
+        self.assertTrue(all(
+            name == "wrist_flex" and register in ("Lock", "Max_Position_Limit")
+            for register, name, _ in self.bus.writes
+        ))
+        self.bus.calibration = after
+        attach_angular_calibration(self.device, "leader")
+        self.bus.connect()
+        self.assertEqual(self.bus._normalize({4: 1220})[4], 0)
+        self.assertAlmostEqual(self.bus._normalize({4: 200})[4], -90)
+
+    def test_incomplete_or_degenerate_zero_reference_is_read_only(self):
+        for references in (
+            {"reference_ticks": 200},
+            {"zero_ticks": 1220, "reference_ticks": 1220, "reference_degrees": -90},
+            {"zero_ticks": 1220, "reference_ticks": 200, "reference_degrees": 0},
+            {"zero_ticks": 1220, "reference_ticks": 200, "reference_degrees": float("nan")},
+        ):
+            with self.subTest(references=references), self.assertRaises(ValueError):
+                AngularInstall("leader").preview_limits(self.device, 4, 80, 2360, **references)
+        self.assertEqual(self.bus.writes, [])
+
+    def test_cli_accepts_j4_measured_zero_and_negative_angle(self):
+        self.bus.calibration["wrist_flex"].update(homing_offset=601, range_min=80, range_max=2364)
+        self.bus.live["wrist_flex"].update(self.bus.calibration["wrist_flex"])
+        self.bus.raw["wrist_flex"] = 1220
+        self.path.write_text(json.dumps(self.bus.calibration))
+        args = [
+            "cf-robot-leader-limits", "--port", "/dev/fake", "--joint", "4",
+            "--min", "80", "--max", "2360",
+            "--zero-ticks", "1220", "--reference-ticks", "200", "--reference-degrees", "-90",
+        ]
+        with patch("sys.argv", args), patch("sys.stdout", StringIO()), patch(
+            "cf_robot.leader_limits.make_leader", return_value=self.device,
+        ), patch("builtins.input", return_value="APPLY J4 LIMITS"):
+            main()
+        self.assertEqual(self.bus.live["wrist_flex"]["range_max"], 2360)
+        profile = json.loads(self.profile_path.read_bytes())
+        self.assertAlmostEqual(profile["joints"]["wrist_flex"]["degrees_per_tick"], 90 / 1020)
+
+    def test_zero_only_uses_full_encoder_resolution_without_invented_measurements(self):
+        preview = AngularInstall("leader").preview_limits(
+            self.device, 4, 80, 2360, zero_ticks=1220,
+        )
+        record = preview["angular_profile"]
+        self.assertEqual(record["degrees_per_tick"], 360 / 4096)
+        self.assertEqual(record["encoder_resolution"], 4096)
+        self.assertEqual(record["reference_points"], [{"ticks": 1220, "degrees": 0}])
+        self.assertAlmostEqual((200 - 1220) * record["degrees_per_tick"], -89.6484375)
+        self.assertEqual(self.bus.writes, [])
+
+    def test_maximum_only_change_allows_position_at_unchanged_minimum(self):
+        self.bus.calibration["wrist_roll"]["range_min"] = 130
+        self.bus.live["wrist_roll"]["range_min"] = 130
+        self.bus.raw["wrist_roll"] = 130
+        self.path.write_text(json.dumps(self.bus.calibration))
+        manager = AngularInstall("leader")
+        preview = manager.preview_limits(self.device, 5, 130, 3936)
+        self.assertEqual(preview["hardware_writes"], {"Max_Position_Limit": 3936})
+        self.apply(manager, preview)
+        self.assertFalse(any(row[0] == "Min_Position_Limit" for row in self.bus.writes))
+        self.assertEqual(self.bus.raw["wrist_roll"], 130)
+        self.assertFalse(self.bus.torque["wrist_roll"])
+
+    def test_maximum_only_change_still_requires_clearance_at_changed_maximum(self):
+        self.bus.calibration["wrist_roll"]["range_min"] = 130
+        self.bus.live["wrist_roll"]["range_min"] = 130
+        self.bus.raw["wrist_roll"] = 3936
+        self.path.write_text(json.dumps(self.bus.calibration))
+        with self.assertRaisesRegex(ValueError, "20-tick margin"):
+            AngularInstall("leader").preview_limits(self.device, 5, 130, 3936)
+        self.assertEqual(self.bus.writes, [])
+
 
 if __name__ == "__main__":
     unittest.main()

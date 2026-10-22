@@ -193,13 +193,14 @@ def create_app(
     def start_video_relay():
         nonlocal video_task
         if video_task is None or video_task.done():
+            video_stop.clear()
             video_task = asyncio.create_task(relay_video())
 
     async def watch_browser(current_task, current_stop, require_video):
         nonlocal stop_reason, estop_latched
         while not current_task.done():
             await asyncio.sleep(min(0.25, heartbeat_timeout / 2))
-            if current_task.done():
+            if current_task.done() or current_stop.is_set():
                 return
             if time.monotonic() - last_heartbeat > heartbeat_timeout:
                 stop_reason = "Browser heartbeat lost; control stopped."
@@ -347,6 +348,30 @@ def create_app(
         elif stop_event is not None:
             stop_event.set()
         status["state"] = "stopping" if task is not None and not task.done() else "idle"
+        return {"state": status["state"]}
+
+    @app.post("/api/disconnect")
+    async def disconnect_controller(request: Request):
+        nonlocal stop_reason
+        require_origin(request)
+        stop_reason = "Controller disconnected by operator."
+        pose_monitor.stop()
+        calibration.stop()
+        if runtime is not None:
+            runtime.stop_event.set()
+        if stop_event is not None:
+            stop_event.set()
+        video_stop.set()
+        video_frame.update(data=None, received_at=None)
+        status.update(
+            state="stopping" if task is not None and not task.done() else "idle",
+            camera_state="idle", camera_received_at=None,
+        )
+        status.pop("camera_error", None)
+        if video_task is not None and not video_task.done():
+            video_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await video_task
         return {"state": status["state"]}
 
     @app.post("/api/estop")

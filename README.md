@@ -821,6 +821,10 @@ can reach the controller before WSS disappears. The helper executes
 `shutdown -r +1` or `shutdown -h +1`. A successful response confirms
 scheduling, not completion of reboot/power-off. New robot sessions stay
 blocked until restart; the Pi must be powered on locally after shutdown.
+If the WebSocket handshake is rejected, the CLI reports `Pi command NOT SENT`:
+no command was transmitted by that attempt. HTTP 530 indicates the Cloudflare
+path to the Pi/Tunnel was unavailable. Check Pi power, network and `cloudflared`;
+no power request can be delivered through a disconnected Tunnel.
 If the connection drops or the helper times out, the outcome may be
 unknown: do not automatically resend a power command. Inspect the Pi
 locally if necessary. If scheduling fails definitively, sessions are
